@@ -32,9 +32,30 @@ ManimGL treats scene code as the renderer — to get frame 1000, you re-run the 
 - **Encoding:** subprocess ffmpeg.
 - **Repo separation:** Manimax is independent of Divita. Divita consumes Manimax as a pip dependency.
 
-## Reference repos to study when in doubt
+## Reference code: ManimGL
 
-- [pydantic-core](https://github.com/pydantic/pydantic-core) — closest prior art for "Python builds IR, Rust compiles it."
+ManimGL is pinned as a git submodule at `reference/manimgl/`. It is the primary reference for what Python authoring should feel like, and the source of truth for rendering/animation semantics we're porting. **Before inventing a new API or translating a rendering concept, read the manimgl equivalent first.** Do not guess at manimgl's behavior from memory.
+
+Contributors cloning fresh: `git clone --recurse-submodules`, or `git submodule update --init` after a normal clone.
+
+### Key subdirectories under `reference/manimgl/manimlib/`
+
+- `scene/` — `Scene.construct()`, lifecycle, frame/time stepping. The Python authoring loop we're replacing with IR emission.
+- `mobject/` — mobject hierarchy (VMobject, geometry, tex, text, 3D). Structural vocabulary the IR must express.
+- `animation/` — `Animation`, `Transform`, rate functions, composition. Maps to IR time-varying values.
+- `shaders/` — GLSL for VMobject rendering, stroke/fill. Reference when porting to WGSL in `crates/manim-rs-raster/shaders/`.
+- `camera/` — camera model, frame buffer, window/offline split. Informs the Rust runtime's render target abstraction.
+- `utils/` — bezier math, color, tex, SVG parsing. Most of this needs a Rust port.
+
+### Porting practices
+
+1. **Porting notes.** When you port a subsystem, drop a short `docs/porting-notes/<subsystem>.md` capturing invariants, API shape, and edge cases that aren't obvious from the manimgl source. 200–500 words. These compound — over time they become the primary reference and the submodule fades to a fallback.
+2. **Distinctive stub labels.** Use `PORT_STUB_MANIMGL_<subsystem>` (not `TODO`) for placeholder Rust waiting on a real port. Greppable, unambiguous.
+3. **Per-function attribution.** When porting a non-trivial algorithm, put a short header comment on the Rust function: manimgl source file + commit SHA + one-line note. Answers "which manimgl version does this match?" at the function level; also satisfies MIT attribution.
+4. **Literal-first translation.** First pass keeps manimgl's variable names and control flow even if it's ugly Rust. Only refactor to idiomatic Rust after it works. Eliminates "logic bug vs. porting bug" ambiguity.
+
+### Other prior art
+
+- [pydantic-core](https://github.com/pydantic/pydantic-core) — closest analog for "Python builds IR, Rust compiles it."
 - [rerun](https://github.com/rerun-io/rerun) — Python SDK + Rust runtime, Arrow-encoded messages.
 - [polars](https://github.com/pola-rs/polars) — maturin workspace layout at scale.
-- [3b1b/manim (ManimGL)](https://github.com/3b1b/manim) — cloned locally at `/Users/chcardoz/development/manimgl-ref/` for reference. Source of truth for what Python authoring should feel like.
