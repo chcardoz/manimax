@@ -39,4 +39,9 @@ uv pip install -e ".[dev]"
 echo "--> building rust extension (maturin develop)"
 maturin develop
 
+# 5. Pre-commit hooks. Config is .pre-commit-config.yaml (ruff + cargo fmt).
+# Without this step the YAML is inert and `git commit` skips formatter checks.
+echo "--> installing pre-commit git hook"
+pre-commit install
+
 echo "==> setup complete. next: pytest tests/python"
