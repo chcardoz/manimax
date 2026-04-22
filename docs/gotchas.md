@@ -87,7 +87,15 @@ Fix lives in: `crates/manim-rs-raster/src/lib.rs` — `align_up` + the `readback
 
 Same rule on the Python side: msgspec Structs that carry only a tag must still be a class body, not a bare tag constant.
 
-Caught by: the parametrized 7-site unknown-field test in `tests/python/test_ir_roundtrip.py`. See also ADR 0002's addendum.
+Caught by: the parametrized unknown-field test matrix in `tests/python/test_ir_roundtrip.py` (21 sites as of Slice C). See also ADR 0002's addendum.
+
+### Round-trip equality on f32 fields needs dyadic rationals
+
+IR scalar fields (e.g. `Easing::ExponentialDecay.half_life`, `Stroke.width`) are `f32` in Rust but `float` (f64) in Python. The wire path is: Python f64 → ryu shortest decimal → serde f32 → ryu shortest decimal → msgspec f64. For values like `0.1` or `1.0/3.0`, the f32 round-trip produces a *different* f64 bit pattern (e.g. `0.3333333333333333` goes to `0.33333334`), so structural `==` on decoded msgspec structs fails even though the wire contract is sound.
+
+Fix in tests: use dyadic rationals (`0.25`, `0.125`, `0.5`, `2.0`) for any float parameter that a round-trip test compares with `==`. Don't "fix" this by switching fields to `f64` — f32 is correct for graphics-adjacent values; the issue is the test fixture, not the schema.
+
+Caught by: `test_every_easing_roundtrips_through_rust` flagging `ThereAndBackWithPauseEasing(pause_ratio=1.0/3.0)` during Slice C Step 2.
 
 ---
 

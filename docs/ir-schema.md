@@ -1,12 +1,12 @@
-# IR Schema — v1 (Slice B)
+# IR Schema — v1 (Slice B → Slice C)
 
-**Status:** active. Describes the minimum surface needed by Slice B.
-**Wire format:** JSON (via `serde_json` in Rust, `msgspec.json` in Python). Slice B uses a JSON string at the FFI boundary; Slice C will swap to `pythonize`/`FromPyObject` without changing the schema.
+**Status:** active. Slice C grew the surface additively; `SCHEMA_VERSION` is still **1**. No field changed meaning, so no bump.
+**Wire format:** at the FFI boundary we pass a Python value (msgspec `Struct` → `msgspec.to_builtins` → `pythonize` → serde). On disk and for the schema-drift guard the representation is JSON (`serde_json` ↔ `msgspec.json`).
 **Encoding principles:**
 
-- **Internally tagged unions.** Every sum type carries its discriminator as a named field (`op`, `kind`) flattened into the payload. Chosen because it is the only form both `serde` and `msgspec` support natively — no hand-written wrapping layer on either side.
-- **Strict schemas.** Every serde struct uses `#[serde(deny_unknown_fields)]`; every msgspec struct uses `forbid_unknown_fields=True`. Drift between Python and Rust fails loudly at deserialize time.
-- **All fields required.** Optionality is a forward-compat escape hatch we don't need yet. When we do, we add it deliberately.
+- **Internally tagged unions.** Every sum type carries its discriminator as a named field (`op`, `kind`) flattened into the payload. The only form both `serde` and `msgspec` support natively.
+- **Strict schemas.** Every serde struct uses `#[serde(deny_unknown_fields)]`; every msgspec struct uses `forbid_unknown_fields=True`. Drift fails loudly at deserialize time.
+- **Required fields, typed absence.** Most fields are required. Where a value is genuinely optional (`stroke`, `fill`), the field is still required on the wire — its value may be `null`. Matches the `Option<T>` shape without handing an escape hatch to the encoder.
 - **Schema version is stored.** `Scene.metadata.schema_version = 1`. Evaluator rejects versions it does not recognize.
 
 ---
@@ -50,23 +50,64 @@ Color space note: values are stored in **sRGB** space (no gamma correction on th
 
 ---
 
+## Stroke and Fill
+
+Every geometry variant carries an `Option<Stroke>` and an `Option<Fill>`. Both fields are required on the wire; `null` denotes absence. A shape with `stroke: null, fill: null` has no visible surface (legal but renders nothing).
+
+```jsonc
+// Stroke
+{ "color": [r, g, b, a], "width": 0.04 }
+```
+
+- `width` is in **scene units**, not pixels. Camera is hardcoded at `[-8, 8] × [-4.5, 4.5]` in Slice B.
+
+```jsonc
+// Fill
+{ "color": [r, g, b, a] }
+```
+
+---
+
 ## Object
 
-Slice B has exactly one object variant:
+Internally tagged union with discriminator `"kind"`.
+
+### Polyline
 
 ```jsonc
 { "kind": "Polyline",
-  "points":       [[x, y, z], ...],   // Vec3[]
-  "stroke_color": [r, g, b, a],       // RgbaSrgb
-  "stroke_width": 0.04,               // f32, scene-space units
-  "closed":       true                 // bool
+  "points": [[x, y, z], ...],          // Vec3[]
+  "closed": true,                       // bool
+  "stroke": { /* Stroke | null */ },
+  "fill":   { /* Fill   | null */ }
 }
 ```
 
 - `closed: true` — the renderer connects the last point back to the first. Explicit rather than manimgl's duplicate-first-point convention.
-- `stroke_width` is in **scene units**, not pixels. Camera is hardcoded at `[-8, 8] × [-4.5, 4.5]` in Slice B.
 
-Future variants (Slice C+): `Circle`, `BezPath`, `Text`, `Image`. Each is a new `kind`.
+### BezPath
+
+A sequence of SVG/lyon-style path verbs. Slice C ships the shape; tessellation is wired up in a later step.
+
+```jsonc
+{ "kind": "BezPath",
+  "verbs": [ /* PathVerb[] */ ],
+  "stroke": { /* Stroke | null */ },
+  "fill":   { /* Fill   | null */ }
+}
+```
+
+`PathVerb` is itself an internally tagged union with discriminator `"kind"`:
+
+| `kind` | Fields | Meaning |
+|---|---|---|
+| `MoveTo` | `to: Vec3` | Start a new sub-path at `to`. |
+| `LineTo` | `to: Vec3` | Straight segment to `to`. |
+| `QuadTo` | `ctrl: Vec3`, `to: Vec3` | Quadratic Bézier. |
+| `CubicTo` | `ctrl1: Vec3`, `ctrl2: Vec3`, `to: Vec3` | Cubic Bézier. |
+| `Close` | — | Close the current sub-path. |
+
+Future variants (Slice C+): `Circle`, `Text`, `Image`. Each is a new `Object` `kind`.
 
 ---
 
@@ -81,43 +122,59 @@ Internally tagged union with discriminator `"op"`. Ordered by `t` ascending; ren
 
 An object is **active at time `t`** iff an `Add` with that id occurs at time `≤ t` and no subsequent `Remove` with that id occurs in `(add_t, t]`. Re-adding the same id after a remove is permitted; each activation interval is independent.
 
-Slice B only emits one `Add` per scene. `Remove`, `Set`, `Reparent`, `Label`, `CameraSet` are deferred.
+`Set`, `Reparent`, `Label`, `CameraSet` are deferred.
 
 ---
 
 ## Track
 
-Internally tagged union with discriminator `"kind"`. One track per animated property per object; multiple segments within a track describe the time-varying value.
+Internally tagged union with discriminator `"kind"`. One track per animated property per object; multiple segments within a track describe the time-varying value. Multiple tracks of the same `kind` may reference the same `id`; their contributions sum.
 
-### PositionTrack
+Every track variant has the same shape:
 
 ```jsonc
-{ "kind": "Position",
-  "id": 1,
-  "segments": [
-    { "t0": 0.0, "t1": 2.0,
-      "from": [0.0, 0.0, 0.0],
-      "to":   [2.0, 0.0, 0.0],
-      "easing": { "kind": "Linear" } }
-  ]
-}
+{ "kind": "<variant>", "id": 1, "segments": [ /* Segment[] */ ] }
 ```
 
+Every segment carries `t0: Time`, `t1: Time`, `from`, `to`, `easing: Easing`. The value type of `from`/`to` is per-segment kind.
+
+| Track `kind` | Segment type | Value type | Notes |
+|---|---|---|---|
+| `Position` | `PositionSegment` | `Vec3` | Offset added to object base position. |
+| `Opacity` | `OpacitySegment` | `f32` | Multiplicative, default 1.0. |
+| `Rotation` | `RotationSegment` | `f32` (radians) | Matches manimgl / numpy convention. |
+| `Scale` | `ScaleSegment` | `f32` | Uniform scale; 1.0 is identity. Per-axis scale deferred. |
+| `Color` | `ColorSegment` | `RgbaSrgb` | Stroke/fill tint; lerped componentwise. |
+
+Segment rules (all tracks):
+
 - `id` references an object that must be active throughout `[t0, t1]`.
-- Segments within a track must have `t0 < t1` and must not overlap; gaps are allowed (position stays at the last `to` value).
-- The object's **effective position at time `t`** is `object.base_position + active_segment_value(t)`. For Slice B, `base_position` is implicitly zero (positions live entirely in the track).
+- Segments within a single track have `t0 < t1` and must not overlap. Gaps are allowed — the value holds at the last segment's `to`.
+- Before the first segment, the value is the implicit default (zero for Position, 1.0 for Opacity / Scale, 0.0 for Rotation, object's authored color for Color).
 
 ### Easing
 
-Internally tagged. Slice B: one variant.
+All 15 manimgl rate functions. Every variant carries `"kind": "<name>"`. Parameterless variants are empty structs so `deny_unknown_fields` / `forbid_unknown_fields` still reject extras (serde silently tolerates extras on unit variants under an internal tag).
 
-```jsonc
-{ "kind": "Linear" }
-```
+| `kind` | Parameters | Equivalent manimgl function |
+|---|---|---|
+| `Linear` | — | `linear(t) = t` |
+| `Smooth` | — | `smooth(t)` — bezier(0,0,0,1,1,1) |
+| `RushInto` | — | `2 · smooth(t/2)` |
+| `RushFrom` | — | `2 · smooth((t+1)/2) − 1` |
+| `SlowInto` | — | `sqrt(1 − (1−t)²)` |
+| `DoubleSmooth` | — | stitched `smooth` at `t=0.5` |
+| `ThereAndBack` | — | `smooth(min(2t, 2−2t))` |
+| `Lingering` | — | `squish(Linear, 0.0, 0.8)` |
+| `ThereAndBackWithPause` | `pause_ratio: f32` | plateau in the middle of the segment |
+| `RunningStart` | `pull_factor: f32` | bezier(0,0,pf,pf,1,1,1) |
+| `Overshoot` | `pull_factor: f32` | bezier(0,0,pf,pf,1,1) |
+| `Wiggle` | `wiggles: f32` | `there_and_back(t) · sin(wiggles·π·t)` |
+| `ExponentialDecay` | `half_life: f32` | `1 − exp(−t / half_life)` |
+| `NotQuiteThere` | `inner: Easing`, `proportion: f32` | `proportion · inner(t)` |
+| `SquishRateFunc` | `inner: Easing`, `a: f32`, `b: f32` | `inner((t−a)/(b−a))` clamped outside `[a, b]` |
 
-Evaluated as `from + (to - from) * (t - t0) / (t1 - t0)`.
-
-Future variants (Slice C+): `Smooth`, `Rush`, `Slow`, parameterized variants e.g. `{ "kind": "Smooth", "inflection": 10.0 }`. Each is additive.
+`NotQuiteThere` and `SquishRateFunc` are recursive — `inner` is itself an `Easing`, encoded with its own `kind` tag.
 
 ---
 
@@ -129,7 +186,7 @@ The evaluator treats invalid IR as a hard error. Producers (the Python scene API
 2. `timeline` is sorted non-decreasing by `t`.
 3. Every `Remove` op references an id currently active.
 4. Every track's `id` refers to an object that `Add`'s at some point.
-5. Every track's segments are sorted, non-overlapping, with `t0 < t1`.
+5. Every track's segments are sorted, non-overlapping, with `t0 ≤ t1` (`t0 == t1` is a zero-duration jump — legal and evaluates to `to`).
 6. `duration` ≥ the latest timestamp referenced by any op or segment.
 7. `fps` ≥ 1. `resolution.{width,height}` ≥ 1.
 
@@ -137,13 +194,11 @@ The evaluator treats invalid IR as a hard error. Producers (the Python scene API
 
 ## What's not here
 
-Deliberately out of scope for v1, per `docs/slices/slice-b.md` §4:
+Deliberately out of scope for v1:
 
-- Non-polyline geometry (circles, bezier paths, text, surfaces).
-- Color, opacity, rotation, scale tracks.
-- Non-linear easings.
+- Non-Polyline / non-BezPath geometry (circles, text, surfaces).
+- Fill pipeline (Stroke renders; Fill is represented in the IR but the rasterizer does not yet draw it).
 - `Set`, `Reparent`, `Label`, `CameraSet` timeline ops.
-- Fill (only stroke).
 - Scene graph / parenting.
 - Multi-camera, 3D camera.
 - Chunked rendering metadata, cache keys.
