@@ -137,8 +137,8 @@ Read `docs/ir-schema.md` for the authoritative schema (to be written). Read the 
 All versions and recommendations below were verified via web research in April 2026. Flag if any of this rots.
 
 ### Toolchain
-- **Rust 1.95 stable**, edition **2024**, resolver **3**. Pin Rust in `rust-toolchain.toml`. MSRV 1.83 (pyo3 0.28 floor). Edition 2024 is the current edition name, not the calendar year.
-- **pyo3 0.28.2**. Breaking changes in last 12 months: `IntoPyObject` rework (0.23), `FromPyObject` rework (0.28), `.downcast()` → `.cast()` (deprecated), modules default to `Py_MOD_GIL_NOT_USED`.
+- **Rust 1.95 stable**, edition **2024**, resolver **3**. Pin Rust in `rust-toolchain.toml`. Edition 2024 is the current edition name, not the calendar year.
+- **pyo3 0.23** (pinned in `Cargo.toml` — abi3-py310, extension-module). The research-doc target was 0.28.2, but Slice B shipped on 0.23 and we haven't found a reason to upgrade yet. Notable 0.23 specifics: GIL release is `py.allow_threads(…)` (NOT `py.detach` — that's 0.28 naming). Upgrade to 0.28 is tracked as a Slice C candidate if the `FromPyObject` rework or `pythonize` pulls us there.
 - **maturin 1.13.1**. Use `python-source = "python"`, `module-name = "manim_rs._rust"`.
 
 ### Core dependencies
@@ -236,7 +236,7 @@ Three tiers, pick by shape:
 
 **For Manimax: start with `#[derive(FromPyObject)]` + enum variants for op unions.** Shift to `serde-pyobject` only if the IR gets deeply recursive.
 
-Release GIL around heavy Rust work: `py.detach(|| { /* render */ })` (0.28 naming, `allow_threads` still aliased).
+Release GIL around heavy Rust work: `py.allow_threads(|| { /* render */ })` (0.23 naming — what Slice B ships with). Post-upgrade to 0.28 this becomes `py.detach(|| …)`.
 
 ### Zero-copy numpy
 `rust-numpy` (≥ 0.23 for free-threaded support). `PyReadonlyArray2<f32>` with `as_slice()?` gives zero-copy `&[f32]` — document that point arrays must be C-contiguous (or Python side calls `np.ascontiguousarray`).
@@ -534,7 +534,7 @@ This was fact-checked in April 2026 via web research. Flag any of these if they 
 - Skia's `SkPath` supports `quadTo` natively (`cubicTo` too). Cairo's `curve_to` is cubic-only.
 - Vello is still **alpha** in April 2026. `vello_cpu` 0.6 declared "ready for production" except API stability.
 - Rust `wgpu` is at v29.0.1.
-- pyo3 0.28.2 + maturin 1.13.1 are current.
+- pyo3 0.23 (pinned) + maturin 1.13.1 are what Slice B ships with. pyo3 0.28.2 is the ecosystem current but not adopted.
 - WebKitGTK 2.46 replaced Cairo with Skia.
 - Kimi K2.5 = Claude Sonnet 4 on ManiBench Executability (66.7%) — but Sonnet 4 is cleanly better on Alignment (100% vs 91.7%) and VCER (0% vs 8.3%).
 - manylinux_2_28 is becoming standard; manylinux2014 is being deprecated.
@@ -576,6 +576,6 @@ This was fact-checked in April 2026 via web research. Flag any of these if they 
 - **Python** owns scene authoring (ported from ManimGL's `mobject/`, `utils/`, rewritten `scene/` and `animation/`).
 - **Rust** owns IR evaluation + wgpu rendering + encoding.
 - **wgpu** over tiny-skia/Vello because it's the only Rust stack supporting 2D + 3D in one codebase without alpha deps.
-- **Stack is verified current** as of April 2026. Rust 1.95 / edition 2024 / wgpu 29 / pyo3 0.28.2 / maturin 1.13.1 / Python 3.11+.
+- **Stack is verified current** as of April 2026. Rust 1.95 / edition 2024 / wgpu 29 / pyo3 0.23 (pinned; 0.28 is upstream current) / maturin 1.13.1 / Python 3.11+.
 - **Separate repo from Divita.** Manimax is a standalone library.
-- **Greenfield.** Start by freezing the IR schema, then build the smallest end-to-end slice (Python records polyline → Rust renders frame at t).
+- **Slice B shipped** — Python records polyline → Rust evaluates IR → wgpu rasters → ffmpeg encodes mp4. See `docs/slices/slice-b.md` and `STATUS.md` for current state.
