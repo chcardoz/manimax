@@ -7,7 +7,7 @@
 //!   vertex buffer exceeds 64 KiB.
 
 use manim_rs_eval::{ObjectState, SceneState};
-use manim_rs_ir::{Object, Vec3};
+use manim_rs_ir::{Object, Stroke, Vec3};
 use manim_rs_raster::{Camera, Runtime, RuntimeError};
 
 const WIDTH: u32 = 128;
@@ -21,9 +21,12 @@ fn small_square(cx: f32, cy: f32, half: f32) -> Object {
             [cx + half, cy + half, 0.0],
             [cx - half, cy + half, 0.0],
         ] as Vec<Vec3>,
-        stroke_color: [1.0, 1.0, 1.0, 1.0],
-        stroke_width: 0.2,
         closed: true,
+        stroke: Some(Stroke {
+            color: [1.0, 1.0, 1.0, 1.0],
+            width: 0.2,
+        }),
+        fill: None,
     }
 }
 
@@ -80,28 +83,19 @@ fn degenerate_polyline_is_skipped_siblings_still_render() {
             let pts: Vec<Vec3> = vec![[0.0, 0.0, 0.0], [0.0, 0.0, 0.0]];
             pts
         },
-        stroke_color: [1.0, 1.0, 1.0, 1.0],
-        stroke_width: 0.2,
         closed: false,
+        stroke: Some(Stroke {
+            color: [1.0, 1.0, 1.0, 1.0],
+            width: 0.2,
+        }),
+        fill: None,
     };
 
     let state = SceneState {
         objects: vec![
-            ObjectState {
-                id: 1,
-                object: small_square(-3.0, 0.0, 0.4),
-                position: [0.0, 0.0, 0.0],
-            },
-            ObjectState {
-                id: 2,
-                object: degenerate,
-                position: [0.0, 0.0, 0.0],
-            },
-            ObjectState {
-                id: 3,
-                object: small_square(3.0, 0.0, 0.4),
-                position: [0.0, 0.0, 0.0],
-            },
+            ObjectState::with_defaults(1, small_square(-3.0, 0.0, 0.4), [0.0, 0.0, 0.0]),
+            ObjectState::with_defaults(2, degenerate, [0.0, 0.0, 0.0]),
+            ObjectState::with_defaults(3, small_square(3.0, 0.0, 0.4), [0.0, 0.0, 0.0]),
         ],
     };
 
@@ -145,16 +139,19 @@ fn oversized_polyline_returns_geometry_overflow() {
     }
 
     let state = SceneState {
-        objects: vec![ObjectState {
-            id: 1,
-            object: Object::Polyline {
+        objects: vec![ObjectState::with_defaults(
+            1,
+            Object::Polyline {
                 points,
-                stroke_color: [1.0, 1.0, 1.0, 1.0],
-                stroke_width: 0.2,
                 closed: true,
+                stroke: Some(Stroke {
+                    color: [1.0, 1.0, 1.0, 1.0],
+                    width: 0.2,
+                }),
+                fill: None,
             },
-            position: [0.0, 0.0, 0.0],
-        }],
+            [0.0, 0.0, 0.0],
+        )],
     };
 
     match runtime.render(&state, &Camera::SLICE_B_DEFAULT, [0.0, 0.0, 0.0, 1.0]) {

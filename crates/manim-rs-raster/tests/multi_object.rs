@@ -11,7 +11,7 @@
 //! of the frame and asserting that both regions contain non-background pixels.
 
 use manim_rs_eval::{ObjectState, SceneState};
-use manim_rs_ir::{Object, Vec3};
+use manim_rs_ir::{Object, Stroke, Vec3};
 use manim_rs_raster::{Camera, Runtime};
 
 const WIDTH: u32 = 480;
@@ -25,9 +25,12 @@ fn square(cx: f32, cy: f32, half: f32) -> Object {
             [cx + half, cy + half, 0.0],
             [cx - half, cy + half, 0.0],
         ] as Vec<Vec3>,
-        stroke_color: [1.0, 1.0, 1.0, 1.0],
-        stroke_width: 0.15,
         closed: true,
+        stroke: Some(Stroke {
+            color: [1.0, 1.0, 1.0, 1.0],
+            width: 0.15,
+        }),
+        fill: None,
     }
 }
 
@@ -59,16 +62,8 @@ fn both_objects_in_multi_object_scene_are_visible() {
     // region where A should be is the failure signal.
     let state = SceneState {
         objects: vec![
-            ObjectState {
-                id: 1,
-                object: square(-4.0, 0.0, 0.5),
-                position: [0.0, 0.0, 0.0],
-            },
-            ObjectState {
-                id: 2,
-                object: square(4.0, 0.0, 0.5),
-                position: [0.0, 0.0, 0.0],
-            },
+            ObjectState::with_defaults(1, square(-4.0, 0.0, 0.5), [0.0, 0.0, 0.0]),
+            ObjectState::with_defaults(2, square(4.0, 0.0, 0.5), [0.0, 0.0, 0.0]),
         ],
     };
 
@@ -105,21 +100,9 @@ fn three_objects_all_visible_at_expected_centroids() {
     //   x =  4 → pixel 360
     let state = SceneState {
         objects: vec![
-            ObjectState {
-                id: 1,
-                object: square(-4.0, 0.0, 0.5),
-                position: [0.0, 0.0, 0.0],
-            },
-            ObjectState {
-                id: 2,
-                object: square(0.0, 0.0, 0.5),
-                position: [0.0, 0.0, 0.0],
-            },
-            ObjectState {
-                id: 3,
-                object: square(4.0, 0.0, 0.5),
-                position: [0.0, 0.0, 0.0],
-            },
+            ObjectState::with_defaults(1, square(-4.0, 0.0, 0.5), [0.0, 0.0, 0.0]),
+            ObjectState::with_defaults(2, square(0.0, 0.0, 0.5), [0.0, 0.0, 0.0]),
+            ObjectState::with_defaults(3, square(4.0, 0.0, 0.5), [0.0, 0.0, 0.0]),
         ],
     };
 

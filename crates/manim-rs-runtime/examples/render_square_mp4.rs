@@ -11,8 +11,8 @@
 use std::path::Path;
 
 use manim_rs_ir::{
-    Easing, Object, PositionSegment, Resolution, SCHEMA_VERSION, Scene, SceneMetadata, TimelineOp,
-    Track,
+    Easing, Object, PositionSegment, Resolution, SCHEMA_VERSION, Scene, SceneMetadata, Stroke,
+    TimelineOp, Track,
 };
 use manim_rs_runtime::render_to_mp4;
 
@@ -38,9 +38,12 @@ fn main() {
                     [1.0, 1.0, 0.0],
                     [-1.0, 1.0, 0.0],
                 ],
-                stroke_color: [1.0, 1.0, 1.0, 1.0],
-                stroke_width: 0.08,
                 closed: true,
+                stroke: Some(Stroke {
+                    color: [1.0, 1.0, 1.0, 1.0],
+                    width: 0.08,
+                }),
+                fill: None,
             },
         }],
         tracks: vec![Track::Position {
