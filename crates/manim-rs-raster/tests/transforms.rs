@@ -66,24 +66,13 @@ fn render_one(state: ObjectState) -> Vec<u8> {
 
 #[test]
 fn opacity_dims_stroke_color() {
-    let opaque = render_one(ObjectState {
-        id: 1,
-        object: unit_square(),
-        position: [0.0, 0.0, 0.0],
-        opacity: 1.0,
-        rotation: 0.0,
-        scale: 1.0,
-        color_override: None,
-    });
-    let dim = render_one(ObjectState {
-        id: 1,
-        object: unit_square(),
-        position: [0.0, 0.0, 0.0],
-        opacity: 0.5,
-        rotation: 0.0,
-        scale: 1.0,
-        color_override: None,
-    });
+    let mut opaque_state = ObjectState::with_defaults(1, unit_square(), [0.0, 0.0, 0.0]);
+    opaque_state.opacity = 1.0;
+    let opaque = render_one(opaque_state);
+
+    let mut dim_state = ObjectState::with_defaults(1, unit_square(), [0.0, 0.0, 0.0]);
+    dim_state.opacity = 0.5;
+    let dim = render_one(dim_state);
 
     // Same geometry → same number of touched pixels (above a low threshold).
     let (n_opaque, _, _) = bright_centroid_and_count(&opaque, 20);
@@ -113,15 +102,9 @@ fn opacity_dims_stroke_color() {
 
 #[test]
 fn color_override_replaces_authored_color() {
-    let pixels = render_one(ObjectState {
-        id: 1,
-        object: unit_square(),
-        position: [0.0, 0.0, 0.0],
-        opacity: 1.0,
-        rotation: 0.0,
-        scale: 1.0,
-        color_override: Some([1.0, 0.0, 0.0, 1.0]),
-    });
+    let mut state = ObjectState::with_defaults(1, unit_square(), [0.0, 0.0, 0.0]);
+    state.color_override = Some([1.0, 0.0, 0.0, 1.0]);
+    let pixels = render_one(state);
 
     // The authored color is white; an override to red must produce pixels
     // dominated by the R channel.
@@ -149,24 +132,15 @@ fn color_override_replaces_authored_color() {
 
 #[test]
 fn scale_dilates_bounding_box() {
-    let unit = render_one(ObjectState {
-        id: 1,
-        object: unit_square(),
-        position: [0.0, 0.0, 0.0],
-        opacity: 1.0,
-        rotation: 0.0,
-        scale: 1.0,
-        color_override: None,
-    });
-    let doubled = render_one(ObjectState {
-        id: 1,
-        object: unit_square(),
-        position: [0.0, 0.0, 0.0],
-        opacity: 1.0,
-        rotation: 0.0,
-        scale: 2.0,
-        color_override: None,
-    });
+    let unit = render_one(ObjectState::with_defaults(
+        1,
+        unit_square(),
+        [0.0, 0.0, 0.0],
+    ));
+
+    let mut doubled_state = ObjectState::with_defaults(1, unit_square(), [0.0, 0.0, 0.0]);
+    doubled_state.scale = 2.0;
+    let doubled = render_one(doubled_state);
 
     // Bounding box of touched pixels (rough proxy for stroke extent).
     let bbox = |rgba: &[u8], threshold: u8| -> (u32, u32, u32, u32) {
@@ -224,15 +198,9 @@ fn rotation_keeps_centroid_centered_for_symmetric_shape() {
     // we had `T · S · R`, an off-origin object would orbit instead of spin
     // in place. The scene origin maps to pixel (240, 135) at SLICE_B_DEFAULT
     // and 480×270.
-    let pixels = render_one(ObjectState {
-        id: 1,
-        object: unit_square(),
-        position: [0.0, 0.0, 0.0],
-        opacity: 1.0,
-        rotation: std::f32::consts::FRAC_PI_4,
-        scale: 1.0,
-        color_override: None,
-    });
+    let mut state = ObjectState::with_defaults(1, unit_square(), [0.0, 0.0, 0.0]);
+    state.rotation = std::f32::consts::FRAC_PI_4;
+    let pixels = render_one(state);
 
     let (n, cx, cy) = bright_centroid_and_count(&pixels, 40);
     assert!(n > 100, "no stroke drawn");
@@ -252,15 +220,9 @@ fn rotation_with_translation_orbits_correctly() {
     // around the object's *local* origin, not the scene origin. So an object
     // translated to (+2, 0) then rotated stays at (+2, 0); only its body
     // spins. SLICE_B_DEFAULT camera maps scene x=+2 to pixel 240 + 30·2 = 300.
-    let pixels = render_one(ObjectState {
-        id: 1,
-        object: unit_square(),
-        position: [2.0, 0.0, 0.0],
-        opacity: 1.0,
-        rotation: std::f32::consts::FRAC_PI_4,
-        scale: 1.0,
-        color_override: None,
-    });
+    let mut state = ObjectState::with_defaults(1, unit_square(), [2.0, 0.0, 0.0]);
+    state.rotation = std::f32::consts::FRAC_PI_4;
+    let pixels = render_one(state);
 
     let (n, cx, cy) = bright_centroid_and_count(&pixels, 40);
     assert!(n > 100, "no stroke drawn");

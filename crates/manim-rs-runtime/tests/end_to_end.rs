@@ -66,7 +66,7 @@ fn render_short_scene_to_mp4() {
 
     // 15 fps × 0.4s = 6 frames. Small enough to run fast in CI.
     let scene = short_slice_b_scene(15, 0.4);
-    render_to_mp4(&scene, &path).expect("render_to_mp4");
+    render_to_mp4(scene, &path).expect("render_to_mp4");
     assert!(path.exists(), "mp4 not written");
 
     let probe = Command::new("ffprobe")

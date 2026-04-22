@@ -59,6 +59,6 @@ fn main() {
     };
 
     let out = Path::new("/tmp/slice_b_square.mp4");
-    render_to_mp4(&scene, out).expect("render_to_mp4");
+    render_to_mp4(scene, out).expect("render_to_mp4");
     println!("wrote {}", out.display());
 }

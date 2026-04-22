@@ -108,6 +108,12 @@ The 4K stress test ran for 63 seconds with a silent terminal. No "frame X/480" l
 
 **Lever:** pass a progress callback into `render_to_mp4` and print from the Python side. Trivial to add.
 
+### O12. Post-0005 evaluator-boundary cleanup did not visibly regress render throughput
+
+After ADR 0005 moved `Arc<Object>` out of the IR and into `manim-rs-eval::Evaluator`, the existing `scripts/perf_probe.py` numbers stayed in-family with the Slice C baseline: `eval_at` remained **0.13 ms/call** and the 480p/30 integration render measured **0.22 s** total in the probe (vs 0.42 s/0.22 s style baseline scale, depending on machine load and warm caches). A direct CLI stress render of the integration scene at **4K, 120 fps, 4 s** completed successfully in **28.5 s** (480 frames, valid h264/yuv420p output).
+
+**Implication:** the new plain-IR/compiled-evaluator split appears architecturally cleaner without an obvious throughput penalty on the current integration scene. If a regression hunt is needed later, compare compile-once `Evaluator::new(scene)` against the borrowed convenience path `eval_at(&Scene, t)` directly with a dedicated Rust bench.
+
 ---
 
 ## Priority order (if doing a perf pass)

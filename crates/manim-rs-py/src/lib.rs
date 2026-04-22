@@ -10,7 +10,7 @@
 
 use std::path::PathBuf;
 
-use manim_rs_eval::{SceneState, eval_at as rust_eval_at};
+use manim_rs_eval::{Evaluator, SceneState};
 use manim_rs_ir::Scene;
 use manim_rs_runtime::render_to_mp4 as rust_render_to_mp4;
 use pyo3::exceptions::{PyRuntimeError, PyValueError};
@@ -63,7 +63,7 @@ fn render_to_mp4(
     }
 
     let out_path = PathBuf::from(out);
-    py.allow_threads(|| rust_render_to_mp4(&scene, &out_path))
+    py.allow_threads(move || rust_render_to_mp4(scene, &out_path))
         .map_err(|e| PyRuntimeError::new_err(format!("render_to_mp4 failed: {e}")))
 }
 
@@ -72,7 +72,7 @@ fn render_to_mp4(
 #[pyfunction]
 fn eval_at(py: Python<'_>, ir: &Bound<'_, PyAny>, t: f64) -> PyResult<PyObject> {
     let scene = depythonize_scene(ir)?;
-    let state: SceneState = rust_eval_at(&scene, t);
+    let state: SceneState = Evaluator::new(scene).eval_at(t);
     let obj = pythonize(py, &state)
         .map_err(|e| PyValueError::new_err(format!("state pythonize failed: {e}")))?;
     Ok(obj.into())

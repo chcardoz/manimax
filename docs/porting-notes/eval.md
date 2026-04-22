@@ -5,9 +5,18 @@
 
 The evaluator is **reimplemented, not ported**. Manimgl's model is stateful and replayed-from-zero; ours is pure and random-access. The invariants below are what make that model hold — violating any of them re-couples frame `n` to frame `n-1` and kills the architectural thesis of the project.
 
+As of 2026-04-22 the Rust side has two layers:
+
+- `Scene` in `manim-rs-ir` is still the plain serializable contract.
+- `Evaluator` in `manim-rs-eval` is the compiled/runtime form: it owns a one-time track index and wraps timeline objects in `Arc<Object>` so repeated `eval_at` calls share geometry cheaply.
+
+That split is deliberate. Shared ownership is a runtime optimization, not part of the IR language.
+
 ## The purity contract
 
 `eval_at(scene: &Scene, t: Time) -> SceneState` is a **pure function**. No caching, no history, no state carried across calls.
+
+For hot paths, compile once with `Evaluator::new(scene)` and call `evaluator.eval_at(t)`. That preserves purity while avoiding per-call track indexing and object re-wrapping.
 
 Same `(scene, t)` → same `SceneState`. Always. This is load-bearing, not aesthetic:
 

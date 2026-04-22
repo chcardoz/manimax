@@ -1,42 +1,32 @@
 # Status
 
 **Last updated:** 2026-04-22
-**Current slice:** Slice C — **shipped.** All eight steps green (`docs/slices/slice-c.md`).
+**Current slice:** Post-Slice C cleanup / architecture follow-up.
 
 ## Last session did
 
-- **Step 8 landed: consolidated ADR + porting notes + retrospective.**
-  - `docs/decisions/0004-slice-c-decisions.md` — five sub-decisions (pythonize FFI, `BezPath` primitive, all-tracks-all-easings, fill+MSAA pair, tolerance snapshots). Marked 0001 `superseded by 0004 §A`.
-  - `docs/porting-notes/rate-functions.md` — 15-easing table, f32 precision caveat, composition rules per track kind.
-  - `docs/porting-notes/fill.md` — `lyon::FillTessellator` + non-zero winding + MSAA-for-AA deltas vs manimgl's Loop-Blinn fill.
-  - `docs/porting-notes/scene-discovery.md` — `extract_scene.py` port (kept: class lookup; dropped: `--write-all`, interactive prompt, `compute_total_frames`).
-  - `docs/gotchas.md` — new entries for H.264/yuv420p chroma shift and MSAA resolve-target format/dim pairing; tolerance-snapshot rule appended to the existing platform-pinned entry.
-  - `docs/slices/slice-c.md §11` — retrospective filled (plan deltas, surprising calls, missed §6 gotchas, process observations, Slice D hand-off notes).
-- **Nine Slice C commits on branch `chcardoz/wellington`** (ahead of `origin/main` by 14 total including earlier scaffolding). Branch is unpushed.
-
-Totals: **Rust 53 passed / 0 failed**, **Python 86 passed / 0 failed** (unchanged from Step 7).
+- Reverted the IR boundary back to plain owning data: `TimelineOp::Add.object` is `Object` again; workspace `serde` no longer needs the `rc` feature.
+- Added `manim_rs_eval::Evaluator`, a compiled evaluator that consumes `Scene`, wraps timeline objects in `Arc<Object>`, builds the track index once, and evaluates frames cheaply via `Evaluator::eval_at(t)`.
+- Kept the pure convenience API `eval_at(&Scene, t)` by routing it through `Evaluator::from_scene(scene)` for one-off callers.
+- Updated runtime/Python hot paths to use the compiled evaluator once per render / eval call:
+  - `manim-rs-runtime::render_to_mp4(scene, out)` now takes owned `Scene` and compiles once.
+  - `crates/manim-rs-py` now moves the depythonized `Scene` into runtime/evaluator rather than cloning through the render loop.
+- Simplified raster transform tests to use `ObjectState::with_defaults(...)` instead of repeating neutral fields.
+- Wrote ADR `docs/decisions/0005-plain-ir-compiled-evaluator.md` and updated `docs/porting-notes/eval.md` to document the new split.
+- Verification green:
+  - `cargo test --workspace --exclude manim-rs-py`
+  - `source /Users/chcardoz/conductor/workspaces/manimax/wellington/.venv/bin/activate && maturin develop && pytest tests/python`
+  - Totals unchanged: **Rust 53 passed / 0 failed**, **Python 86 passed / 0 failed**.
+- Stress check after the boundary cleanup:
+  - `python scripts/perf_probe.py` stayed in-family with the Slice C baseline (`eval_at` 0.13 ms/call; 480p/30 integration render 0.22 s).
+  - CLI render at 4K / 120 fps / 4 s completed in 28.5 s and produced a valid 480-frame mp4.
+  - Five consecutive 1080p / 60 fps / 2 s CLI renders all completed and ffprobe reported the expected 120 frames each.
 
 ## Next action
 
-Open to whatever's next. Natural candidates:
-
-- **Push + PR** `chcardoz/wellington` → `main`. 14 commits, clean working tree.
-- **Slice D kick-off.** Real Bézier stroke port (`manimlib/shaders/quadratic_bezier/stroke/*`) with per-vertex width + AA; snapshot cache. See `slice-c.md §10` for the natural sequence and §11's Slice D deltas.
-- **Cross-platform wheels** (parallel workstream, `slice-c.md §9`). Unblocked now that snapshots are tolerance-based.
+- Commit the evaluator-boundary cleanup if desired.
+- If we keep pushing on eval perf, the next natural step is removing the remaining generic segment machinery (`Lerp` / `Segment` / macro) only if it improves readability without hurting tests.
 
 ## Blockers
 
-None.
-
-## Notes for next session
-
-- The single Slice C commit block passed pre-commit cleanly after four small fix-ups (ruff UP007, ruff B008×2, cargo fmt on IR + eval). All folded into their respective commits; no fixup commits.
-- `rate_functions.py` at `c5e23d9` — if the submodule advances and upstream adds easings, our enum drifts silently. Slice D planning should re-check.
-- The perf log (`docs/performance.md`) gained entries during this slice but was not acted on; it's a batch target for a future perf pass.
-
-## Convention for updating this file
-
-- **Rewrite, don't append.** This file is current-state, not history. Git log is the history.
-- Update at the end of every session *before* handing back to the user.
-- Keep it under ~50 lines. If it's growing, state is leaking in that should be in `docs/slices/<slice>.md` checkboxes or a porting note.
-- Three required sections: **Last session did**, **Next action**, **Blockers**. Everything else is optional.
+- None.

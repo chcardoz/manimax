@@ -9,9 +9,12 @@
 //! Replaces the role of `manimlib/animation/animation.py`'s `interpolate`.
 //! Reimplemented, not ported.
 
+use std::collections::{HashMap, HashSet};
+use std::sync::Arc;
+
 use manim_rs_ir::{
     ColorSegment, Easing, Object, ObjectId, OpacitySegment, PositionSegment, RgbaSrgb,
-    RotationSegment, ScaleSegment, Scene, Time, Track, Vec3,
+    RotationSegment, ScaleSegment, Scene, Time, TimelineOp, Track, Vec3,
 };
 use serde::{Deserialize, Serialize};
 
@@ -23,7 +26,10 @@ use serde::{Deserialize, Serialize};
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct ObjectState {
     pub id: ObjectId,
-    pub object: Object,
+    // `Arc` so `eval_at` clones geometry by ref-count bump rather than a deep
+    // copy of `Vec<Vec3>` / `Vec<PathVerb>` per frame.
+    #[serde(with = "arc_object_serde")]
+    pub object: Arc<Object>,
     pub position: Vec3,
     pub opacity: f32,
     /// Radians, additive across multiple Rotation tracks.
@@ -41,10 +47,10 @@ impl ObjectState {
     /// Construct an `ObjectState` with neutral track-derived fields. Useful
     /// for raster tests that bypass `eval_at` and build a state literal: they
     /// only care about position-and-geometry.
-    pub fn with_defaults(id: ObjectId, object: Object, position: Vec3) -> Self {
+    pub fn with_defaults(id: ObjectId, object: impl Into<Arc<Object>>, position: Vec3) -> Self {
         Self {
             id,
-            object,
+            object: object.into(),
             position,
             opacity: 1.0,
             rotation: 0.0,
@@ -54,13 +60,54 @@ impl ObjectState {
     }
 }
 
+mod arc_object_serde {
+    use std::sync::Arc;
+
+    use manim_rs_ir::Object;
+    use serde::{Deserialize, Deserializer, Serialize, Serializer};
+
+    pub fn serialize<S>(object: &Arc<Object>, serializer: S) -> Result<S::Ok, S::Error>
+    where
+        S: Serializer,
+    {
+        object.as_ref().serialize(serializer)
+    }
+
+    pub fn deserialize<'de, D>(deserializer: D) -> Result<Arc<Object>, D::Error>
+    where
+        D: Deserializer<'de>,
+    {
+        Ok(Arc::new(Object::deserialize(deserializer)?))
+    }
+}
+
 /// The whole scene's state at a given time.
 #[derive(Debug, Clone, PartialEq, Default, Serialize, Deserialize)]
 pub struct SceneState {
     pub objects: Vec<ObjectState>,
 }
 
-/// Evaluate the scene at absolute time `t`. Clones geometry into the state.
+/// Runtime-friendly evaluator state compiled once from an authored `Scene`.
+#[derive(Debug, Clone, Default)]
+pub struct Evaluator {
+    timeline: Vec<CompiledTimelineOp>,
+    tracks: HashMap<ObjectId, TrackBundle>,
+}
+
+#[derive(Debug, Clone)]
+enum CompiledTimelineOp {
+    Add {
+        t: Time,
+        id: ObjectId,
+        object: Arc<Object>,
+    },
+    Remove {
+        t: Time,
+        id: ObjectId,
+    },
+}
+
+/// Evaluate the scene at absolute time `t`.
 ///
 /// Track composition semantics (Slice C Step 3):
 /// - Position: additive across Position tracks. Default `[0, 0, 0]`.
@@ -72,120 +119,228 @@ pub struct SceneState {
 /// Trusted (not validated): timeline sorted by `t`, segment ids exist,
 /// segments non-overlapping within a track.
 pub fn eval_at(scene: &Scene, t: Time) -> SceneState {
-    let mut objects = Vec::new();
-    for id in active_ids_at(scene, t) {
-        let object = match latest_add_object(scene, id, t) {
-            Some(o) => o.clone(),
-            None => continue,
-        };
-        objects.push(ObjectState {
-            id,
-            object,
-            position: sum_position_tracks(scene, id, t),
-            opacity: product_opacity_tracks(scene, id, t),
-            rotation: sum_rotation_tracks(scene, id, t),
-            scale: product_scale_tracks(scene, id, t),
-            color_override: latest_color_track(scene, id, t),
-        });
-    }
-    SceneState { objects }
+    Evaluator::from_scene(scene).eval_at(t)
 }
 
-/// Ids whose most recent timeline event at `t' <= t` is an `Add`.
-/// Preserves first-add order so the render order is deterministic.
-fn active_ids_at(scene: &Scene, t: Time) -> Vec<ObjectId> {
-    use manim_rs_ir::TimelineOp::{Add, Remove};
+impl Evaluator {
+    /// Compile an authored `Scene` into an evaluator that owns preindexed
+    /// tracks and shared object geometry. This is the fast path for renderers
+    /// that evaluate many times.
+    pub fn new(scene: Scene) -> Self {
+        let Scene {
+            metadata: _,
+            timeline,
+            tracks,
+        } = scene;
 
+        let timeline = timeline
+            .into_iter()
+            .map(|op| match op {
+                TimelineOp::Add { t, id, object } => CompiledTimelineOp::Add {
+                    t,
+                    id,
+                    object: Arc::new(object),
+                },
+                TimelineOp::Remove { t, id } => CompiledTimelineOp::Remove { t, id },
+            })
+            .collect();
+
+        Self {
+            timeline,
+            tracks: index_tracks(tracks),
+        }
+    }
+
+    /// Convenience for one-off callers that only have `&Scene`.
+    pub fn from_scene(scene: &Scene) -> Self {
+        Self::new(scene.clone())
+    }
+
+    /// Evaluate the compiled scene at absolute time `t`.
+    pub fn eval_at(&self, t: Time) -> SceneState {
+        let mut objects = Vec::new();
+        for (id, object) in active_objects_at(&self.timeline, t) {
+            let bundle = self.tracks.get(&id);
+            objects.push(ObjectState {
+                id,
+                object: Arc::clone(object),
+                position: bundle.map_or([0.0; 3], |b| sum_segments(&b.position, t)),
+                opacity: bundle.map_or(1.0, |b| product_scalars(&b.opacity, t)),
+                rotation: bundle.map_or(0.0, |b| sum_scalars(&b.rotation, t)),
+                scale: bundle.map_or(1.0, |b| product_scalars(&b.scale, t)),
+                color_override: bundle.and_then(|b| latest_segments(&b.color, t)),
+            });
+        }
+        SceneState { objects }
+    }
+}
+
+/// Active objects whose most recent timeline event at `t' <= t` is an `Add`.
+/// Preserves first-add order so render order remains deterministic.
+fn active_objects_at<'a>(
+    timeline: &'a [CompiledTimelineOp],
+    t: Time,
+) -> Vec<(ObjectId, &'a Arc<Object>)> {
     let mut first_seen: Vec<ObjectId> = Vec::new();
-    let mut active: std::collections::HashMap<ObjectId, bool> = std::collections::HashMap::new();
+    let mut seen: HashSet<ObjectId> = HashSet::new();
+    let mut active: HashMap<ObjectId, &'a Arc<Object>> = HashMap::new();
 
-    for op in &scene.timeline {
+    for op in timeline {
+        let op_t = match op {
+            CompiledTimelineOp::Add { t, .. } | CompiledTimelineOp::Remove { t, .. } => *t,
+        };
+        if op_t > t {
+            break;
+        }
+
         match op {
-            Add { t: op_t, id, .. } if *op_t <= t => {
-                if !active.contains_key(id) {
+            CompiledTimelineOp::Add { id, object, .. } => {
+                if seen.insert(*id) {
                     first_seen.push(*id);
                 }
-                active.insert(*id, true);
+                active.insert(*id, object);
             }
-            Remove { t: op_t, id } if *op_t <= t => {
-                active.insert(*id, false);
+            CompiledTimelineOp::Remove { id, .. } => {
+                active.remove(id);
             }
-            _ => {}
         }
     }
 
     first_seen
         .into_iter()
-        .filter(|id| active.get(id).copied().unwrap_or(false))
+        .filter_map(|id| active.remove(&id).map(|object| (id, object)))
         .collect()
 }
 
-fn latest_add_object<'a>(scene: &'a Scene, id: ObjectId, t: Time) -> Option<&'a Object> {
-    use manim_rs_ir::TimelineOp::Add;
-    let mut last: Option<&Object> = None;
-    for op in &scene.timeline {
-        if let Add {
-            t: op_t,
-            id: op_id,
-            object,
-        } = op
-        {
-            if *op_id == id && *op_t <= t {
-                last = Some(object);
-            }
-        }
-    }
-    last
+// ---------------------------------------------------------------------------
+// Track indexing + generic segment evaluation.
+// ---------------------------------------------------------------------------
+
+#[derive(Debug, Clone, Default)]
+struct TrackBundle {
+    position: Vec<Vec<PositionSegment>>,
+    opacity: Vec<Vec<OpacitySegment>>,
+    rotation: Vec<Vec<RotationSegment>>,
+    scale: Vec<Vec<ScaleSegment>>,
+    color: Vec<Vec<ColorSegment>>,
 }
 
-/// Sum the contributions of every position track that references `id`. If no
-/// track covers `t`, the object sits at origin; gaps clamp to the last `to`.
-fn sum_position_tracks(scene: &Scene, id: ObjectId, t: Time) -> Vec3 {
-    let mut out = [0.0_f32; 3];
-    for track in &scene.tracks {
+fn index_tracks(tracks: Vec<Track>) -> HashMap<ObjectId, TrackBundle> {
+    let mut index: HashMap<ObjectId, TrackBundle> = HashMap::new();
+    for track in tracks {
         match track {
-            Track::Position {
-                id: track_id,
-                segments,
-            } if *track_id == id => {
-                let contribution = evaluate_position_track(segments, t);
-                out[0] += contribution[0];
-                out[1] += contribution[1];
-                out[2] += contribution[2];
+            Track::Position { id, segments } => {
+                index.entry(id).or_default().position.push(segments);
             }
-            _ => {}
+            Track::Opacity { id, segments } => {
+                index.entry(id).or_default().opacity.push(segments);
+            }
+            Track::Rotation { id, segments } => {
+                index.entry(id).or_default().rotation.push(segments);
+            }
+            Track::Scale { id, segments } => {
+                index.entry(id).or_default().scale.push(segments);
+            }
+            Track::Color { id, segments } => {
+                index.entry(id).or_default().color.push(segments);
+            }
         }
     }
-    out
+    index
 }
 
-/// Piecewise evaluation of a sorted, non-overlapping list of position segments.
-/// Before every segment: zero. Inside a segment: `lerp(from, to, ease(alpha))`.
+/// Small linear-interpolation trait used to unify segment evaluation across
+/// `f32` / `Vec3` / `RgbaSrgb`. The three `lerp` impls are the only thing that
+/// used to differ between the five per-kind `evaluate_*_track` copies.
+trait Lerp: Copy {
+    fn lerp(from: Self, to: Self, alpha: f32) -> Self;
+}
+
+impl Lerp for f32 {
+    fn lerp(a: f32, b: f32, alpha: f32) -> f32 {
+        a + (b - a) * alpha
+    }
+}
+
+impl Lerp for [f32; 3] {
+    fn lerp(a: [f32; 3], b: [f32; 3], alpha: f32) -> [f32; 3] {
+        [
+            f32::lerp(a[0], b[0], alpha),
+            f32::lerp(a[1], b[1], alpha),
+            f32::lerp(a[2], b[2], alpha),
+        ]
+    }
+}
+
+impl Lerp for [f32; 4] {
+    fn lerp(a: [f32; 4], b: [f32; 4], alpha: f32) -> [f32; 4] {
+        [
+            f32::lerp(a[0], b[0], alpha),
+            f32::lerp(a[1], b[1], alpha),
+            f32::lerp(a[2], b[2], alpha),
+            f32::lerp(a[3], b[3], alpha),
+        ]
+    }
+}
+
+/// Uniform shape across segment types: each has `t0`, `t1`, `from`, `to`, `easing`.
+trait Segment {
+    type V: Lerp;
+    fn t0(&self) -> Time;
+    fn t1(&self) -> Time;
+    fn from(&self) -> Self::V;
+    fn to(&self) -> Self::V;
+    fn easing(&self) -> &Easing;
+}
+
+macro_rules! impl_segment {
+    ($seg:ty, $v:ty) => {
+        impl Segment for $seg {
+            type V = $v;
+            fn t0(&self) -> Time {
+                self.t0
+            }
+            fn t1(&self) -> Time {
+                self.t1
+            }
+            fn from(&self) -> $v {
+                self.from
+            }
+            fn to(&self) -> $v {
+                self.to
+            }
+            fn easing(&self) -> &Easing {
+                &self.easing
+            }
+        }
+    };
+}
+
+impl_segment!(PositionSegment, Vec3);
+impl_segment!(OpacitySegment, f32);
+impl_segment!(RotationSegment, f32);
+impl_segment!(ScaleSegment, f32);
+impl_segment!(ColorSegment, RgbaSrgb);
+
+/// Piecewise evaluation of a sorted, non-overlapping list of segments.
+/// Before every segment: `None`. Inside a segment: `lerp(from, to, ease(alpha))`.
 /// In a gap or past the last segment: the `to` of the most recently completed
 /// segment (i.e. the one whose `t1 <= t`).
-fn evaluate_position_track(segments: &[PositionSegment], t: Time) -> Vec3 {
-    let mut held: Vec3 = [0.0, 0.0, 0.0];
+fn evaluate_track<S: Segment>(segments: &[S], t: Time) -> Option<S::V> {
+    let mut held: Option<S::V> = None;
     for seg in segments {
-        if t >= seg.t0 && t <= seg.t1 {
-            let alpha = segment_alpha(seg.t0, seg.t1, t);
-            let eased = apply_easing(&seg.easing, alpha);
-            return lerp_vec3(seg.from, seg.to, eased);
+        let (t0, t1) = (seg.t0(), seg.t1());
+        if t >= t0 && t <= t1 {
+            let alpha = segment_alpha(t0, t1, t);
+            let eased = apply_easing(seg.easing(), alpha);
+            return Some(Lerp::lerp(seg.from(), seg.to(), eased));
         }
-        if seg.t1 < t {
-            held = seg.to;
+        if t1 < t {
+            held = Some(seg.to());
         }
     }
     held
 }
-
-// ---------------------------------------------------------------------------
-// Opacity / Rotation / Scale / Color — track aggregation.
-//
-// Each new track type duplicates the per-segment scan from `evaluate_position_track`
-// rather than going through a generic helper. Three scalar segment types is
-// below the abstraction threshold; an associated-type-or-trait extraction
-// would be more code than the duplication it removes.
-// ---------------------------------------------------------------------------
 
 fn segment_alpha(t0: Time, t1: Time, t: Time) -> f32 {
     if t1 == t0 {
@@ -195,158 +350,68 @@ fn segment_alpha(t0: Time, t1: Time, t: Time) -> f32 {
     }
 }
 
-fn evaluate_opacity_track(segments: &[OpacitySegment], t: Time) -> Option<f32> {
-    let mut held: Option<f32> = None;
-    for seg in segments {
-        if t >= seg.t0 && t <= seg.t1 {
-            let alpha = segment_alpha(seg.t0, seg.t1, t);
-            let eased = apply_easing(&seg.easing, alpha);
-            return Some(seg.from + (seg.to - seg.from) * eased);
-        }
-        if seg.t1 < t {
-            held = Some(seg.to);
-        }
-    }
-    held
-}
-
-fn evaluate_rotation_track(segments: &[RotationSegment], t: Time) -> Option<f32> {
-    let mut held: Option<f32> = None;
-    for seg in segments {
-        if t >= seg.t0 && t <= seg.t1 {
-            let alpha = segment_alpha(seg.t0, seg.t1, t);
-            let eased = apply_easing(&seg.easing, alpha);
-            return Some(seg.from + (seg.to - seg.from) * eased);
-        }
-        if seg.t1 < t {
-            held = Some(seg.to);
-        }
-    }
-    held
-}
-
-fn evaluate_scale_track(segments: &[ScaleSegment], t: Time) -> Option<f32> {
-    let mut held: Option<f32> = None;
-    for seg in segments {
-        if t >= seg.t0 && t <= seg.t1 {
-            let alpha = segment_alpha(seg.t0, seg.t1, t);
-            let eased = apply_easing(&seg.easing, alpha);
-            return Some(seg.from + (seg.to - seg.from) * eased);
-        }
-        if seg.t1 < t {
-            held = Some(seg.to);
-        }
-    }
-    held
-}
-
-fn evaluate_color_track(segments: &[ColorSegment], t: Time) -> Option<RgbaSrgb> {
-    let mut held: Option<RgbaSrgb> = None;
-    for seg in segments {
-        if t >= seg.t0 && t <= seg.t1 {
-            let alpha = segment_alpha(seg.t0, seg.t1, t);
-            let eased = apply_easing(&seg.easing, alpha);
-            return Some(lerp_rgba(seg.from, seg.to, eased));
-        }
-        if seg.t1 < t {
-            held = Some(seg.to);
-        }
-    }
-    held
-}
-
-/// Multiply every active Opacity track's contribution. Default 1.0 when none.
-fn product_opacity_tracks(scene: &Scene, id: ObjectId, t: Time) -> f32 {
-    let mut out = 1.0_f32;
-    for track in &scene.tracks {
-        if let Track::Opacity {
-            id: track_id,
-            segments,
-        } = track
-        {
-            if *track_id == id {
-                if let Some(v) = evaluate_opacity_track(segments, t) {
-                    out *= v;
-                }
-            }
+fn sum_segments<S>(tracks: &[Vec<S>], t: Time) -> Vec3
+where
+    S: Segment<V = Vec3>,
+{
+    let mut out = [0.0_f32; 3];
+    for segs in tracks {
+        if let Some(v) = evaluate_track(segs.as_slice(), t) {
+            out[0] += v[0];
+            out[1] += v[1];
+            out[2] += v[2];
         }
     }
     out
 }
 
-/// Sum every active Rotation track's contribution (radians). Default 0.0.
-fn sum_rotation_tracks(scene: &Scene, id: ObjectId, t: Time) -> f32 {
+fn sum_scalars<S>(tracks: &[Vec<S>], t: Time) -> f32
+where
+    S: Segment<V = f32>,
+{
     let mut out = 0.0_f32;
-    for track in &scene.tracks {
-        if let Track::Rotation {
-            id: track_id,
-            segments,
-        } = track
-        {
-            if *track_id == id {
-                if let Some(v) = evaluate_rotation_track(segments, t) {
-                    out += v;
-                }
-            }
+    for segs in tracks {
+        if let Some(v) = evaluate_track(segs.as_slice(), t) {
+            out += v;
         }
     }
     out
 }
 
-/// Multiply every active Scale track's contribution. Default 1.0.
-fn product_scale_tracks(scene: &Scene, id: ObjectId, t: Time) -> f32 {
+fn product_scalars<S>(tracks: &[Vec<S>], t: Time) -> f32
+where
+    S: Segment<V = f32>,
+{
     let mut out = 1.0_f32;
-    for track in &scene.tracks {
-        if let Track::Scale {
-            id: track_id,
-            segments,
-        } = track
-        {
-            if *track_id == id {
-                if let Some(v) = evaluate_scale_track(segments, t) {
-                    out *= v;
-                }
-            }
+    for segs in tracks {
+        if let Some(v) = evaluate_track(segs.as_slice(), t) {
+            out *= v;
         }
     }
     out
 }
 
-/// Override semantics: the last Color track in declaration order with an
-/// active or held value at `t` wins. `None` ⇒ no override; rasterizer uses
-/// the geometry's authored color.
-fn latest_color_track(scene: &Scene, id: ObjectId, t: Time) -> Option<RgbaSrgb> {
-    let mut out: Option<RgbaSrgb> = None;
-    for track in &scene.tracks {
-        if let Track::Color {
-            id: track_id,
-            segments,
-        } = track
-        {
-            if *track_id == id {
-                if let Some(v) = evaluate_color_track(segments, t) {
-                    out = Some(v);
-                }
-            }
+/// Override semantics: the last track in declaration order with an active or
+/// held value at `t` wins. `None` ⇒ no override.
+fn latest_segments<S>(tracks: &[Vec<S>], t: Time) -> Option<S::V>
+where
+    S: Segment<V = RgbaSrgb>,
+{
+    let mut out: Option<S::V> = None;
+    for segs in tracks {
+        if let Some(v) = evaluate_track(segs.as_slice(), t) {
+            out = Some(v);
         }
     }
     out
 }
 
-fn lerp_rgba(a: RgbaSrgb, b: RgbaSrgb, alpha: f32) -> RgbaSrgb {
-    [
-        a[0] + (b[0] - a[0]) * alpha,
-        a[1] + (b[1] - a[1]) * alpha,
-        a[2] + (b[2] - a[2]) * alpha,
-        a[3] + (b[3] - a[3]) * alpha,
-    ]
-}
+// ---------------------------------------------------------------------------
+// Easings — ported from `reference/manimgl/manimlib/utils/rate_functions.py`.
+// Formulas are 1:1 with the Python source so Python-authored easings are
+// pixel-equivalent in Rust.
+// ---------------------------------------------------------------------------
 
-/// All 15 manimgl rate functions.
-///
-/// Ported from `reference/manimgl/manimlib/utils/rate_functions.py` (Slice C).
-/// Formulas are 1:1 with the Python source so that Python-authored easings
-/// are pixel-equivalent in Rust.
 fn apply_easing(easing: &Easing, alpha: f32) -> f32 {
     match easing {
         Easing::Linear {} => alpha,
@@ -437,14 +502,6 @@ fn bezier_scalar(coeffs: &[f32], t: f32) -> f32 {
         }
     }
     acc
-}
-
-fn lerp_vec3(a: Vec3, b: Vec3, alpha: f32) -> Vec3 {
-    [
-        a[0] + (b[0] - a[0]) * alpha,
-        a[1] + (b[1] - a[1]) * alpha,
-        a[2] + (b[2] - a[2]) * alpha,
-    ]
 }
 
 #[cfg(test)]
