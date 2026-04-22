@@ -22,7 +22,10 @@ fn main() {
             schema_version: SCHEMA_VERSION,
             fps: 30,
             duration: 2.0,
-            resolution: Resolution { width: 480, height: 270 },
+            resolution: Resolution {
+                width: 480,
+                height: 270,
+            },
             background: [0.0, 0.0, 0.0, 1.0],
         },
         timeline: vec![TimelineOp::Add {

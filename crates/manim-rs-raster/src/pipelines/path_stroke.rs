@@ -20,7 +20,10 @@ pub struct StrokeUniforms {
 
 impl StrokeUniforms {
     pub fn new(mvp: Mat4, color: [f32; 4]) -> Self {
-        Self { mvp: mvp.to_cols_array_2d(), color }
+        Self {
+            mvp: mvp.to_cols_array_2d(),
+            color,
+        }
     }
 }
 
@@ -35,9 +38,7 @@ impl StrokePipeline {
     pub fn new(device: &wgpu::Device, color_format: wgpu::TextureFormat) -> Self {
         let shader = device.create_shader_module(wgpu::ShaderModuleDescriptor {
             label: Some("path_stroke.wgsl"),
-            source: wgpu::ShaderSource::Wgsl(
-                include_str!("../shaders/path_stroke.wgsl").into(),
-            ),
+            source: wgpu::ShaderSource::Wgsl(include_str!("../shaders/path_stroke.wgsl").into()),
         });
 
         let bind_group_layout = device.create_bind_group_layout(&wgpu::BindGroupLayoutDescriptor {
@@ -112,6 +113,9 @@ impl StrokePipeline {
             cache: None,
         });
 
-        Self { pipeline, bind_group_layout }
+        Self {
+            pipeline,
+            bind_group_layout,
+        }
     }
 }

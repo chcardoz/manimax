@@ -16,7 +16,6 @@ from __future__ import annotations
 
 import msgspec
 import pytest
-
 from manim_rs import _rust, ir
 
 
@@ -121,13 +120,13 @@ def test_ir_decode_accepts_str_and_bytes() -> None:
 # fails loudly.
 _UNKNOWN_FIELD_SITES = [
     # (description, search-for, replacement)
-    ("metadata",  '"schema_version":1',    '"schema_version":1,"extra":"nope"'),
-    ("add_op",    '"op":"Add"',            '"op":"Add","extra":"nope"'),
-    ("polyline",  '"kind":"Polyline"',     '"kind":"Polyline","extra":"nope"'),
-    ("position",  '"kind":"Position"',     '"kind":"Position","extra":"nope"'),
-    ("segment",   '"t1":2.0',              '"t1":2.0,"extra":"nope"'),
-    ("easing",    '"kind":"Linear"',       '"kind":"Linear","extra":"nope"'),
-    ("remove_op", '"op":"Remove"',         '"op":"Remove","extra":"nope"'),
+    ("metadata", '"schema_version":1', '"schema_version":1,"extra":"nope"'),
+    ("add_op", '"op":"Add"', '"op":"Add","extra":"nope"'),
+    ("polyline", '"kind":"Polyline"', '"kind":"Polyline","extra":"nope"'),
+    ("position", '"kind":"Position"', '"kind":"Position","extra":"nope"'),
+    ("segment", '"t1":2.0', '"t1":2.0,"extra":"nope"'),
+    ("easing", '"kind":"Linear"', '"kind":"Linear","extra":"nope"'),
+    ("remove_op", '"op":"Remove"', '"op":"Remove","extra":"nope"'),
 ]
 
 

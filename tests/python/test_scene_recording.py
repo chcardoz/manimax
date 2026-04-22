@@ -7,7 +7,6 @@ exactly the IR described in ``docs/ir-schema.md`` and ``docs/slices/slice-b.md``
 from __future__ import annotations
 
 import pytest
-
 from manim_rs import Polyline, Scene, Translate, ir
 
 
@@ -115,7 +114,6 @@ def test_parallel_plays_use_max_duration() -> None:
 def test_polyline_accepts_numpy_ndarray() -> None:
     """numpy is a declared top-level dep; the ndarray input path must work."""
     import numpy as np
-
     from manim_rs import Polyline
 
     points = np.array(

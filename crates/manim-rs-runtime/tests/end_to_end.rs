@@ -22,7 +22,10 @@ fn short_slice_b_scene(fps: u32, duration: f64) -> Scene {
             schema_version: SCHEMA_VERSION,
             fps,
             duration,
-            resolution: Resolution { width: 128, height: 72 },
+            resolution: Resolution {
+                width: 128,
+                height: 72,
+            },
             background: [0.0, 0.0, 0.0, 1.0],
         },
         timeline: vec![TimelineOp::Add {

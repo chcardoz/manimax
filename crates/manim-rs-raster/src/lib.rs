@@ -50,7 +50,11 @@ pub enum RuntimeError {
     #[error("wgpu poll failed: {0}")]
     Poll(wgpu::PollError),
     #[error("geometry buffer overflow: {kind} needs {needed} bytes, have {cap}")]
-    GeometryOverflow { kind: &'static str, needed: u64, cap: u64 },
+    GeometryOverflow {
+        kind: &'static str,
+        needed: u64,
+        cap: u64,
+    },
 }
 
 pub struct Runtime {
@@ -74,9 +78,7 @@ impl Runtime {
     pub fn new(width: u32, height: u32) -> Result<Self, RuntimeError> {
         assert!(width > 0 && height > 0, "runtime needs non-zero dimensions");
 
-        let instance = wgpu::Instance::new(
-            wgpu::InstanceDescriptor::new_without_display_handle(),
-        );
+        let instance = wgpu::Instance::new(wgpu::InstanceDescriptor::new_without_display_handle());
         let adapter = pollster::block_on(instance.request_adapter(&wgpu::RequestAdapterOptions {
             power_preference: wgpu::PowerPreference::HighPerformance,
             force_fallback_adapter: false,
@@ -84,18 +86,23 @@ impl Runtime {
         }))
         .map_err(|_| RuntimeError::NoAdapter)?;
 
-        let (device, queue) = pollster::block_on(adapter.request_device(&wgpu::DeviceDescriptor {
-            label: Some("manim-rs-raster device"),
-            required_features: wgpu::Features::empty(),
-            required_limits: wgpu::Limits::downlevel_defaults(),
-            experimental_features: wgpu::ExperimentalFeatures::default(),
-            memory_hints: wgpu::MemoryHints::Performance,
-            trace: wgpu::Trace::Off,
-        }))?;
+        let (device, queue) =
+            pollster::block_on(adapter.request_device(&wgpu::DeviceDescriptor {
+                label: Some("manim-rs-raster device"),
+                required_features: wgpu::Features::empty(),
+                required_limits: wgpu::Limits::downlevel_defaults(),
+                experimental_features: wgpu::ExperimentalFeatures::default(),
+                memory_hints: wgpu::MemoryHints::Performance,
+                trace: wgpu::Trace::Off,
+            }))?;
 
         let color_target = device.create_texture(&wgpu::TextureDescriptor {
             label: Some("manim-rs color target"),
-            size: wgpu::Extent3d { width, height, depth_or_array_layers: 1 },
+            size: wgpu::Extent3d {
+                width,
+                height,
+                depth_or_array_layers: 1,
+            },
             mip_level_count: 1,
             sample_count: 1,
             dimension: wgpu::TextureDimension::D2,
@@ -173,9 +180,11 @@ impl Runtime {
     /// helper; kept around because the stroke-square example and future
     /// examples benefit from a no-geometry baseline.
     pub fn render_clear(&self, color: [f64; 4]) -> Result<Vec<u8>, RuntimeError> {
-        let mut encoder = self.device.create_command_encoder(&wgpu::CommandEncoderDescriptor {
-            label: Some("manim-rs clear encoder"),
-        });
+        let mut encoder = self
+            .device
+            .create_command_encoder(&wgpu::CommandEncoderDescriptor {
+                label: Some("manim-rs clear encoder"),
+            });
         self.begin_and_end_clear_pass(&mut encoder, color);
         self.copy_target_to_readback(&mut encoder);
         self.queue.submit(Some(encoder.finish()));
@@ -206,11 +215,17 @@ impl Runtime {
         // passes use `LoadOp::Load` so draws accumulate.
         let mut first = true;
         for obj in &state.objects {
-            let mut encoder =
-                self.device.create_command_encoder(&wgpu::CommandEncoderDescriptor {
+            let mut encoder = self
+                .device
+                .create_command_encoder(&wgpu::CommandEncoderDescriptor {
                     label: Some("manim-rs per-object encoder"),
                 });
-            let Object::Polyline { points, stroke_color, stroke_width, closed } = &obj.object;
+            let Object::Polyline {
+                points,
+                stroke_color,
+                stroke_width,
+                closed,
+            } = &obj.object;
             let mesh = tessellate_polyline(points, *stroke_width, *closed);
             if mesh.indices.is_empty() {
                 continue;
@@ -241,7 +256,8 @@ impl Runtime {
             let mvp = projection * translation;
             let uniforms = StrokeUniforms::new(mvp, *stroke_color);
 
-            self.queue.write_buffer(&self.uniform_buf, 0, bytemuck::bytes_of(&uniforms));
+            self.queue
+                .write_buffer(&self.uniform_buf, 0, bytemuck::bytes_of(&uniforms));
             self.queue.write_buffer(&self.vertex_buf, 0, v_bytes);
             self.queue.write_buffer(&self.index_buf, 0, i_bytes);
 
@@ -264,7 +280,10 @@ impl Runtime {
                         view: &self.color_view,
                         resolve_target: None,
                         depth_slice: None,
-                        ops: wgpu::Operations { load, store: wgpu::StoreOp::Store },
+                        ops: wgpu::Operations {
+                            load,
+                            store: wgpu::StoreOp::Store,
+                        },
                     })],
                     depth_stencil_attachment: None,
                     timestamp_writes: None,
@@ -286,9 +305,10 @@ impl Runtime {
         }
 
         let mut tail_encoder =
-            self.device.create_command_encoder(&wgpu::CommandEncoderDescriptor {
-                label: Some("manim-rs readback encoder"),
-            });
+            self.device
+                .create_command_encoder(&wgpu::CommandEncoderDescriptor {
+                    label: Some("manim-rs readback encoder"),
+                });
 
         // Empty scenes still need a clear so readback is well-defined.
         if first {
@@ -300,11 +320,7 @@ impl Runtime {
         self.readback_pixels()
     }
 
-    fn begin_and_end_clear_pass(
-        &self,
-        encoder: &mut wgpu::CommandEncoder,
-        color: [f64; 4],
-    ) {
+    fn begin_and_end_clear_pass(&self, encoder: &mut wgpu::CommandEncoder, color: [f64; 4]) {
         let _pass = encoder.begin_render_pass(&wgpu::RenderPassDescriptor {
             label: Some("manim-rs clear pass"),
             color_attachments: &[Some(wgpu::RenderPassColorAttachment {
@@ -344,7 +360,11 @@ impl Runtime {
                     rows_per_image: Some(self.height),
                 },
             },
-            wgpu::Extent3d { width: self.width, height: self.height, depth_or_array_layers: 1 },
+            wgpu::Extent3d {
+                width: self.width,
+                height: self.height,
+                depth_or_array_layers: 1,
+            },
         );
     }
 

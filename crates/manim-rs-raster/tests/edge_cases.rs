@@ -38,7 +38,11 @@ fn empty_scene_is_flat_background() {
     let bg = [0.5_f64, 0.5, 0.5, 1.0];
 
     let pixels = runtime
-        .render(&SceneState { objects: vec![] }, &Camera::SLICE_B_DEFAULT, bg)
+        .render(
+            &SceneState { objects: vec![] },
+            &Camera::SLICE_B_DEFAULT,
+            bg,
+        )
         .expect("render");
 
     assert_eq!(pixels.len(), (WIDTH * HEIGHT * 4) as usize);
@@ -164,9 +168,7 @@ fn oversized_polyline_returns_geometry_overflow() {
                 "unexpected overflow kind: {kind}",
             );
         }
-        Ok(_) => panic!(
-            "expected GeometryOverflow for {n}-point polyline, but render succeeded",
-        ),
+        Ok(_) => panic!("expected GeometryOverflow for {n}-point polyline, but render succeeded",),
         Err(e) => panic!("expected GeometryOverflow, got {e:?}"),
     }
 }

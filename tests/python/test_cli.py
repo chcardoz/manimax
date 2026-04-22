@@ -15,21 +15,23 @@ import sys
 from pathlib import Path
 
 import pytest
-from typer.testing import CliRunner
-
 from manim_rs.cli import app
+from typer.testing import CliRunner
 
 
 def _ffprobe(path: Path) -> str:
     probe = subprocess.run(
         [
             "ffprobe",
-            "-v", "error",
-            "-select_streams", "v:0",
+            "-v",
+            "error",
+            "-select_streams",
+            "v:0",
             "-count_frames",
             "-show_entries",
             "stream=width,height,avg_frame_rate,codec_name,pix_fmt,nb_read_frames",
-            "-of", "default=noprint_wrappers=1",
+            "-of",
+            "default=noprint_wrappers=1",
             str(path),
         ],
         capture_output=True,

@@ -31,7 +31,10 @@ struct StrokeCtor;
 impl StrokeVertexConstructor<Vertex> for StrokeCtor {
     fn new_vertex(&mut self, v: StrokeVertex<'_, '_>) -> Vertex {
         let p = v.position();
-        Vertex { position: [p.x, p.y], uv: [0.0, 0.0] }
+        Vertex {
+            position: [p.x, p.y],
+            uv: [0.0, 0.0],
+        }
     }
 }
 
@@ -51,9 +54,16 @@ pub fn tessellate_polyline(points: &[Vec3], stroke_width: f32, closed: bool) -> 
     let mut buffers: VertexBuffers<Vertex, u32> = VertexBuffers::new();
     let opts = StrokeOptions::DEFAULT.with_line_width(stroke_width);
     let mut tess = StrokeTessellator::new();
-    tess.tessellate_path(&path, &opts, &mut BuffersBuilder::new(&mut buffers, StrokeCtor))
-        .expect("stroke tessellation");
-    Mesh { vertices: buffers.vertices, indices: buffers.indices }
+    tess.tessellate_path(
+        &path,
+        &opts,
+        &mut BuffersBuilder::new(&mut buffers, StrokeCtor),
+    )
+    .expect("stroke tessellation");
+    Mesh {
+        vertices: buffers.vertices,
+        indices: buffers.indices,
+    }
 }
 
 #[cfg(test)]
@@ -70,7 +80,13 @@ mod tests {
         ];
         let mesh = tessellate_polyline(&points, 0.1, true);
         assert!(!mesh.vertices.is_empty(), "stroke mesh must have vertices");
-        assert!(mesh.indices.len() % 3 == 0, "indices must form whole triangles");
-        assert!(mesh.indices.len() >= 6, "a stroked square is at least two triangles");
+        assert!(
+            mesh.indices.len() % 3 == 0,
+            "indices must form whole triangles"
+        );
+        assert!(
+            mesh.indices.len() >= 6,
+            "a stroked square is at least two triangles"
+        );
     }
 }

@@ -16,8 +16,12 @@ pub struct Camera {
 }
 
 impl Camera {
-    pub const SLICE_B_DEFAULT: Camera =
-        Camera { left: -8.0, right: 8.0, bottom: -4.5, top: 4.5 };
+    pub const SLICE_B_DEFAULT: Camera = Camera {
+        left: -8.0,
+        right: 8.0,
+        bottom: -4.5,
+        top: 4.5,
+    };
 
     pub fn projection(&self) -> Mat4 {
         // near=-1, far=1: Slice B is planar; z is squashed without discarding.

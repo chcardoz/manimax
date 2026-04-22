@@ -123,4 +123,3 @@ class Scene:
             timeline=tuple(self._timeline),
             tracks=tuple(tracks),
         )
-

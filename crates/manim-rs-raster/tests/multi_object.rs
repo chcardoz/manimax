@@ -32,14 +32,7 @@ fn square(cx: f32, cy: f32, half: f32) -> Object {
 }
 
 /// Count non-background pixels in an inclusive pixel rectangle.
-fn bright_pixels_in_box(
-    rgba: &[u8],
-    x0: u32,
-    y0: u32,
-    x1: u32,
-    y1: u32,
-    threshold: u8,
-) -> usize {
+fn bright_pixels_in_box(rgba: &[u8], x0: u32, y0: u32, x1: u32, y1: u32, threshold: u8) -> usize {
     let mut n = 0;
     for y in y0..=y1 {
         for x in x0..=x1 {
@@ -90,7 +83,10 @@ fn both_objects_in_multi_object_scene_are_visible() {
 
     assert!(right > 50, "right object missing: only {right} bright px");
     // This is the assertion the bug makes fail:
-    assert!(left > 50, "left object missing: only {left} bright px (multi-object render bug)");
+    assert!(
+        left > 50,
+        "left object missing: only {left} bright px (multi-object render bug)"
+    );
 }
 
 /// Strengthened version: three objects. Two-object coverage proved the
@@ -140,8 +136,14 @@ fn three_objects_all_visible_at_expected_centroids() {
         assert!(n > 50, "{label} object missing: only {n} bright px");
         let dx = (cx as i64 - expected_px as i64).abs();
         let dy = (cy as i64 - 135).abs();
-        assert!(dx <= 3, "{label} centroid drift: x={cx} expected ≈{expected_px} (dx={dx})");
-        assert!(dy <= 3, "{label} centroid drift: y={cy} expected ≈135 (dy={dy})");
+        assert!(
+            dx <= 3,
+            "{label} centroid drift: x={cx} expected ≈{expected_px} (dx={dx})"
+        );
+        assert!(
+            dy <= 3,
+            "{label} centroid drift: y={cy} expected ≈135 (dy={dy})"
+        );
     }
 }
 

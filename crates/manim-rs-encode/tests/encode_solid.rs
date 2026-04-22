@@ -133,7 +133,8 @@ fn solid_color_survives_yuv420p_roundtrip() {
     // Decode the middle frame back to raw RGBA so we can inspect bytes.
     let decoded = Command::new("ffmpeg")
         .args(["-v", "error"])
-        .args(["-i"]).arg(&p)
+        .args(["-i"])
+        .arg(&p)
         .args(["-vf", "select=eq(n\\,2)"])
         .args(["-vframes", "1"])
         .args(["-f", "rawvideo", "-pix_fmt", "rgba"])
