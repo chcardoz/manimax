@@ -13,7 +13,7 @@ use std::io::BufWriter;
 use std::path::Path;
 
 use manim_rs_eval::{ObjectState, SceneState};
-use manim_rs_ir::Object;
+use manim_rs_ir::{Object, Stroke};
 use manim_rs_raster::{Camera, Runtime};
 
 const WIDTH: u32 = 480;
@@ -28,17 +28,16 @@ fn main() {
             [2.0, 2.0, 0.0],
             [-2.0, 2.0, 0.0],
         ],
-        stroke_color: [1.0, 1.0, 1.0, 1.0],
-        stroke_width: 0.08,
         closed: true,
+        stroke: Some(Stroke {
+            color: [1.0, 1.0, 1.0, 1.0],
+            width: 0.08,
+        }),
+        fill: None,
     };
 
     let state = SceneState {
-        objects: vec![ObjectState {
-            id: 1,
-            object: square,
-            position: [0.0, 0.0, 0.0],
-        }],
+        objects: vec![ObjectState::with_defaults(1, square, [0.0, 0.0, 0.0])],
     };
 
     let runtime = Runtime::new(WIDTH, HEIGHT).expect("Runtime init");

@@ -1,11 +1,12 @@
-//! Manimax rasterizer — wgpu device, offscreen render target, CPU readback,
-//! and a single stroke pipeline.
+//! Manimax rasterizer — wgpu device, MSAA-resolved offscreen render target,
+//! CPU readback, and stroke + fill pipelines.
 //!
-//! Slice B scope: a `Runtime` that owns one `Rgba8UnormSrgb` color texture at
-//! a fixed resolution, one readback buffer, one stroke pipeline, and reusable
-//! vertex/index/uniform buffers. `render` evaluates nothing — it takes a
-//! `SceneState` produced by `manim-rs-eval` plus a `Camera`, draws every
-//! object's polyline stroke, and returns tight RGBA bytes.
+//! Slice C scope: a `Runtime` that owns one MSAA color texture (4×) and a
+//! single-sample resolve texture at a fixed resolution, one readback buffer,
+//! a stroke pipeline and a fill pipeline. `render` evaluates nothing — it
+//! takes a `SceneState` produced by `manim-rs-eval` plus a `Camera`, draws
+//! every object's fill (if any) and stroke (if any), resolves MSAA to the
+//! single-sample target, and returns tight RGBA bytes.
 //!
 //! Pre-solved wgpu gotcha (see `docs/slices/slice-b.md` §6.1): buffer copies
 //! require `bytes_per_row` to be a multiple of 256. A 480-wide RGBA row is
@@ -22,16 +23,24 @@ pub use tessellator::{Mesh, Vertex};
 use bytemuck::cast_slice;
 use glam::Mat4;
 use manim_rs_eval::SceneState;
-use manim_rs_ir::Object;
+use manim_rs_ir::{Object, RgbaSrgb};
 
+use crate::pipelines::path_fill::{FillPipeline, FillUniforms};
 use crate::pipelines::path_stroke::{StrokePipeline, StrokeUniforms, UNIFORM_SIZE};
-use crate::tessellator::tessellate_polyline;
+use crate::tessellator::{
+    FillMesh, tessellate_bezpath, tessellate_bezpath_fill, tessellate_polyline,
+    tessellate_polyline_fill,
+};
 
 const COPY_BYTES_PER_ROW_ALIGNMENT: u32 = 256;
 const COLOR_FORMAT: wgpu::TextureFormat = wgpu::TextureFormat::Rgba8UnormSrgb;
 
+/// MSAA sample count. 4× is universally supported across wgpu backends and
+/// gives clean sub-pixel coverage for the thin strokes Manimax renders.
+pub const MSAA_SAMPLE_COUNT: u32 = 4;
+
 /// Per-object vertex/index buffer capacity. 64 KiB holds ~4 K vertices or
-/// ~16 K u32 indices — more than enough for Slice B.
+/// ~16 K u32 indices — more than enough for Slice C.
 const GEOMETRY_BUFFER_SIZE: u64 = 64 * 1024;
 
 fn align_up(v: u32, align: u32) -> u32 {
@@ -60,18 +69,25 @@ pub enum RuntimeError {
 pub struct Runtime {
     device: wgpu::Device,
     queue: wgpu::Queue,
-    color_target: wgpu::Texture,
-    color_view: wgpu::TextureView,
+    msaa_view: wgpu::TextureView,
+    resolve_target: wgpu::Texture,
+    resolve_view: wgpu::TextureView,
     readback: wgpu::Buffer,
     width: u32,
     height: u32,
     padded_bytes_per_row: u32,
 
     stroke: StrokePipeline,
-    vertex_buf: wgpu::Buffer,
-    index_buf: wgpu::Buffer,
-    uniform_buf: wgpu::Buffer,
-    bind_group: wgpu::BindGroup,
+    stroke_vertex_buf: wgpu::Buffer,
+    stroke_index_buf: wgpu::Buffer,
+    stroke_uniform_buf: wgpu::Buffer,
+    stroke_bind_group: wgpu::BindGroup,
+
+    fill: FillPipeline,
+    fill_vertex_buf: wgpu::Buffer,
+    fill_index_buf: wgpu::Buffer,
+    fill_uniform_buf: wgpu::Buffer,
+    fill_bind_group: wgpu::BindGroup,
 }
 
 impl Runtime {
@@ -86,18 +102,41 @@ impl Runtime {
         }))
         .map_err(|_| RuntimeError::NoAdapter)?;
 
+        // Use the adapter's reported limits rather than `downlevel_defaults`,
+        // whose 2048x2048 texture cap blocks 4K renders on hardware that can
+        // easily support them (Apple Silicon, modern desktop GPUs). Callers
+        // get what the GPU can actually do; if a device lacks 4K support, the
+        // texture-creation error surfaces with an obvious limit message.
         let (device, queue) =
             pollster::block_on(adapter.request_device(&wgpu::DeviceDescriptor {
                 label: Some("manim-rs-raster device"),
                 required_features: wgpu::Features::empty(),
-                required_limits: wgpu::Limits::downlevel_defaults(),
+                required_limits: adapter.limits(),
                 experimental_features: wgpu::ExperimentalFeatures::default(),
                 memory_hints: wgpu::MemoryHints::Performance,
                 trace: wgpu::Trace::Off,
             }))?;
 
-        let color_target = device.create_texture(&wgpu::TextureDescriptor {
-            label: Some("manim-rs color target"),
+        // MSAA color target — render here.
+        let msaa_color_target = device.create_texture(&wgpu::TextureDescriptor {
+            label: Some("manim-rs MSAA color target"),
+            size: wgpu::Extent3d {
+                width,
+                height,
+                depth_or_array_layers: 1,
+            },
+            mip_level_count: 1,
+            sample_count: MSAA_SAMPLE_COUNT,
+            dimension: wgpu::TextureDimension::D2,
+            format: COLOR_FORMAT,
+            usage: wgpu::TextureUsages::RENDER_ATTACHMENT,
+            view_formats: &[],
+        });
+        let msaa_view = msaa_color_target.create_view(&wgpu::TextureViewDescriptor::default());
+
+        // Single-sample resolve target — what we actually copy out.
+        let resolve_target = device.create_texture(&wgpu::TextureDescriptor {
+            label: Some("manim-rs resolve target"),
             size: wgpu::Extent3d {
                 width,
                 height,
@@ -110,7 +149,7 @@ impl Runtime {
             usage: wgpu::TextureUsages::RENDER_ATTACHMENT | wgpu::TextureUsages::COPY_SRC,
             view_formats: &[],
         });
-        let color_view = color_target.create_view(&wgpu::TextureViewDescriptor::default());
+        let resolve_view = resolve_target.create_view(&wgpu::TextureViewDescriptor::default());
 
         let unpadded_bytes_per_row = width * 4;
         let padded_bytes_per_row = align_up(unpadded_bytes_per_row, COPY_BYTES_PER_ROW_ALIGNMENT);
@@ -123,49 +162,33 @@ impl Runtime {
         });
 
         let stroke = StrokePipeline::new(&device, COLOR_FORMAT);
+        let (stroke_vertex_buf, stroke_index_buf, stroke_uniform_buf, stroke_bind_group) =
+            create_geometry_resources(&device, "stroke", &stroke.bind_group_layout);
 
-        let vertex_buf = device.create_buffer(&wgpu::BufferDescriptor {
-            label: Some("stroke vertex buffer"),
-            size: GEOMETRY_BUFFER_SIZE,
-            usage: wgpu::BufferUsages::VERTEX | wgpu::BufferUsages::COPY_DST,
-            mapped_at_creation: false,
-        });
-        let index_buf = device.create_buffer(&wgpu::BufferDescriptor {
-            label: Some("stroke index buffer"),
-            size: GEOMETRY_BUFFER_SIZE,
-            usage: wgpu::BufferUsages::INDEX | wgpu::BufferUsages::COPY_DST,
-            mapped_at_creation: false,
-        });
-        let uniform_buf = device.create_buffer(&wgpu::BufferDescriptor {
-            label: Some("stroke uniform buffer"),
-            size: UNIFORM_SIZE,
-            usage: wgpu::BufferUsages::UNIFORM | wgpu::BufferUsages::COPY_DST,
-            mapped_at_creation: false,
-        });
-
-        let bind_group = device.create_bind_group(&wgpu::BindGroupDescriptor {
-            label: Some("stroke bind group"),
-            layout: &stroke.bind_group_layout,
-            entries: &[wgpu::BindGroupEntry {
-                binding: 0,
-                resource: uniform_buf.as_entire_binding(),
-            }],
-        });
+        let fill = FillPipeline::new(&device, COLOR_FORMAT);
+        let (fill_vertex_buf, fill_index_buf, fill_uniform_buf, fill_bind_group) =
+            create_geometry_resources(&device, "fill", &fill.bind_group_layout);
 
         Ok(Self {
             device,
             queue,
-            color_target,
-            color_view,
+            msaa_view,
+            resolve_target,
+            resolve_view,
             readback,
             width,
             height,
             padded_bytes_per_row,
             stroke,
-            vertex_buf,
-            index_buf,
-            uniform_buf,
-            bind_group,
+            stroke_vertex_buf,
+            stroke_index_buf,
+            stroke_uniform_buf,
+            stroke_bind_group,
+            fill,
+            fill_vertex_buf,
+            fill_index_buf,
+            fill_uniform_buf,
+            fill_bind_group,
         })
     }
 
@@ -176,9 +199,9 @@ impl Runtime {
         self.height
     }
 
-    /// Clear the target to `color` and return tight RGBA bytes. Step 4 debug
-    /// helper; kept around because the stroke-square example and future
-    /// examples benefit from a no-geometry baseline.
+    /// Clear the target to `color` and return tight RGBA bytes. Debug helper;
+    /// kept around because the stroke-square example and future examples
+    /// benefit from a no-geometry baseline.
     pub fn render_clear(&self, color: [f64; 4]) -> Result<Vec<u8>, RuntimeError> {
         let mut encoder = self
             .device
@@ -186,23 +209,23 @@ impl Runtime {
                 label: Some("manim-rs clear encoder"),
             });
         self.begin_and_end_clear_pass(&mut encoder, color);
-        self.copy_target_to_readback(&mut encoder);
+        self.copy_resolve_to_readback(&mut encoder);
         self.queue.submit(Some(encoder.finish()));
         self.readback_pixels()
     }
 
-    /// Render a scene-state snapshot through the stroke pipeline.
+    /// Render a scene-state snapshot.
     ///
-    /// Slice B policy: re-tessellate every object every frame; position comes
-    /// entirely from the MVP (no geometry rebuild on translation). The camera
-    /// projection is composed with a per-object translation.
+    /// Per-object policy: re-tessellate every object every frame; transforms
+    /// come entirely from the MVP. Per-object draw order is **fill, then
+    /// stroke** so the outline sits on top of the interior, matching manimgl.
     ///
-    /// Per-object submission is load-bearing: reusing one vertex/index/uniform
-    /// buffer across multiple passes in a *single* submit drops every object
-    /// but the last, because `queue.write_buffer` is ordered before all
-    /// submitted command buffers (last write wins, every pass sees the final
-    /// buffer contents). Submitting after each object forces the writes to
-    /// interleave with the passes as authored. See `docs/gotchas.md`.
+    /// Per-object submission is load-bearing: reusing one vertex/index/
+    /// uniform buffer across multiple passes in a *single* submit drops
+    /// every object but the last, because `queue.write_buffer` is ordered
+    /// before all submitted command buffers. Submitting after each object
+    /// forces the writes to interleave with the passes as authored. See
+    /// `docs/gotchas.md`.
     pub fn render(
         &self,
         state: &SceneState,
@@ -215,51 +238,102 @@ impl Runtime {
         // passes use `LoadOp::Load` so draws accumulate.
         let mut first = true;
         for obj in &state.objects {
-            let mut encoder = self
-                .device
-                .create_command_encoder(&wgpu::CommandEncoderDescriptor {
-                    label: Some("manim-rs per-object encoder"),
-                });
-            let Object::Polyline {
-                points,
-                stroke_color,
-                stroke_width,
-                closed,
-            } = &obj.object;
-            let mesh = tessellate_polyline(points, *stroke_width, *closed);
-            if mesh.indices.is_empty() {
-                continue;
-            }
-
-            let v_bytes: &[u8] = cast_slice(&mesh.vertices);
-            let i_bytes: &[u8] = cast_slice(&mesh.indices);
-            if v_bytes.len() as u64 > GEOMETRY_BUFFER_SIZE {
-                return Err(RuntimeError::GeometryOverflow {
-                    kind: "vertex",
-                    needed: v_bytes.len() as u64,
-                    cap: GEOMETRY_BUFFER_SIZE,
-                });
-            }
-            if i_bytes.len() as u64 > GEOMETRY_BUFFER_SIZE {
-                return Err(RuntimeError::GeometryOverflow {
-                    kind: "index",
-                    needed: i_bytes.len() as u64,
-                    cap: GEOMETRY_BUFFER_SIZE,
-                });
-            }
-
+            // Build the per-object transform once.
             let translation = Mat4::from_translation(glam::Vec3::new(
                 obj.position[0],
                 obj.position[1],
                 obj.position[2],
             ));
-            let mvp = projection * translation;
-            let uniforms = StrokeUniforms::new(mvp, *stroke_color);
+            let rotation = Mat4::from_rotation_z(obj.rotation);
+            let scale = Mat4::from_scale(glam::Vec3::splat(obj.scale));
+            let mvp = projection * translation * rotation * scale;
 
-            self.queue
-                .write_buffer(&self.uniform_buf, 0, bytemuck::bytes_of(&uniforms));
-            self.queue.write_buffer(&self.vertex_buf, 0, v_bytes);
-            self.queue.write_buffer(&self.index_buf, 0, i_bytes);
+            let (fill_mesh, fill_color, stroke_mesh, stroke_color) = match &obj.object {
+                Object::Polyline {
+                    points,
+                    closed,
+                    stroke,
+                    fill,
+                } => {
+                    let fill_mesh = fill
+                        .as_ref()
+                        .map(|_| tessellate_polyline_fill(points, *closed));
+                    let stroke_mesh = stroke
+                        .as_ref()
+                        .map(|s| tessellate_polyline(points, s.width, *closed));
+                    (
+                        fill_mesh,
+                        fill.as_ref().map(|f| f.color),
+                        stroke_mesh,
+                        stroke.as_ref().map(|s| s.color),
+                    )
+                }
+                Object::BezPath {
+                    verbs,
+                    stroke,
+                    fill,
+                } => {
+                    let fill_mesh = fill.as_ref().map(|_| tessellate_bezpath_fill(verbs));
+                    let stroke_mesh = stroke.as_ref().map(|s| tessellate_bezpath(verbs, s.width));
+                    (
+                        fill_mesh,
+                        fill.as_ref().map(|f| f.color),
+                        stroke_mesh,
+                        stroke.as_ref().map(|s| s.color),
+                    )
+                }
+            };
+
+            // Apply opacity + color override to whichever paints exist.
+            let final_fill_color =
+                fill_color.map(|c| modulate_color(c, obj.color_override, obj.opacity));
+            let final_stroke_color =
+                stroke_color.map(|c| modulate_color(c, obj.color_override, obj.opacity));
+
+            // Skip the object entirely if neither paint produced geometry.
+            let fill_drawable = fill_mesh.as_ref().is_some_and(|m| !m.indices.is_empty());
+            let stroke_drawable = stroke_mesh.as_ref().is_some_and(|m| !m.indices.is_empty());
+            if !fill_drawable && !stroke_drawable {
+                continue;
+            }
+
+            let mut encoder = self
+                .device
+                .create_command_encoder(&wgpu::CommandEncoderDescriptor {
+                    label: Some("manim-rs per-object encoder"),
+                });
+
+            if let (Some(mesh), Some(color)) = (fill_mesh.as_ref(), final_fill_color) {
+                if !mesh.indices.is_empty() {
+                    let v_bytes: &[u8] = cast_slice(&mesh.vertices);
+                    let i_bytes: &[u8] = cast_slice(&mesh.indices);
+                    check_geometry_size(v_bytes.len() as u64, i_bytes.len() as u64)?;
+                    let uniforms = FillUniforms::new(mvp, color);
+                    self.queue.write_buffer(
+                        &self.fill_uniform_buf,
+                        0,
+                        bytemuck::bytes_of(&uniforms),
+                    );
+                    self.queue.write_buffer(&self.fill_vertex_buf, 0, v_bytes);
+                    self.queue.write_buffer(&self.fill_index_buf, 0, i_bytes);
+                }
+            }
+
+            if let (Some(mesh), Some(color)) = (stroke_mesh.as_ref(), final_stroke_color) {
+                if !mesh.indices.is_empty() {
+                    let v_bytes: &[u8] = cast_slice(&mesh.vertices);
+                    let i_bytes: &[u8] = cast_slice(&mesh.indices);
+                    check_geometry_size(v_bytes.len() as u64, i_bytes.len() as u64)?;
+                    let uniforms = StrokeUniforms::new(mvp, color);
+                    self.queue.write_buffer(
+                        &self.stroke_uniform_buf,
+                        0,
+                        bytemuck::bytes_of(&uniforms),
+                    );
+                    self.queue.write_buffer(&self.stroke_vertex_buf, 0, v_bytes);
+                    self.queue.write_buffer(&self.stroke_index_buf, 0, i_bytes);
+                }
+            }
 
             let load = if first {
                 first = false;
@@ -275,10 +349,10 @@ impl Runtime {
 
             {
                 let mut pass = encoder.begin_render_pass(&wgpu::RenderPassDescriptor {
-                    label: Some("stroke pass"),
+                    label: Some("paint pass"),
                     color_attachments: &[Some(wgpu::RenderPassColorAttachment {
-                        view: &self.color_view,
-                        resolve_target: None,
+                        view: &self.msaa_view,
+                        resolve_target: Some(&self.resolve_view),
                         depth_slice: None,
                         ops: wgpu::Operations {
                             load,
@@ -290,14 +364,34 @@ impl Runtime {
                     occlusion_query_set: None,
                     multiview_mask: None,
                 });
-                pass.set_pipeline(&self.stroke.pipeline);
-                pass.set_bind_group(0, &self.bind_group, &[]);
-                pass.set_vertex_buffer(0, self.vertex_buf.slice(..v_bytes.len() as u64));
-                pass.set_index_buffer(
-                    self.index_buf.slice(..i_bytes.len() as u64),
-                    wgpu::IndexFormat::Uint32,
-                );
-                pass.draw_indexed(0..mesh.indices.len() as u32, 0, 0..1);
+
+                if fill_drawable {
+                    let mesh = fill_mesh.as_ref().unwrap();
+                    let v_bytes: &[u8] = cast_slice(&mesh.vertices);
+                    let i_bytes: &[u8] = cast_slice(&mesh.indices);
+                    pass.set_pipeline(&self.fill.pipeline);
+                    pass.set_bind_group(0, &self.fill_bind_group, &[]);
+                    pass.set_vertex_buffer(0, self.fill_vertex_buf.slice(..v_bytes.len() as u64));
+                    pass.set_index_buffer(
+                        self.fill_index_buf.slice(..i_bytes.len() as u64),
+                        wgpu::IndexFormat::Uint32,
+                    );
+                    pass.draw_indexed(0..mesh.indices.len() as u32, 0, 0..1);
+                }
+
+                if stroke_drawable {
+                    let mesh = stroke_mesh.as_ref().unwrap();
+                    let v_bytes: &[u8] = cast_slice(&mesh.vertices);
+                    let i_bytes: &[u8] = cast_slice(&mesh.indices);
+                    pass.set_pipeline(&self.stroke.pipeline);
+                    pass.set_bind_group(0, &self.stroke_bind_group, &[]);
+                    pass.set_vertex_buffer(0, self.stroke_vertex_buf.slice(..v_bytes.len() as u64));
+                    pass.set_index_buffer(
+                        self.stroke_index_buf.slice(..i_bytes.len() as u64),
+                        wgpu::IndexFormat::Uint32,
+                    );
+                    pass.draw_indexed(0..mesh.indices.len() as u32, 0, 0..1);
+                }
             }
 
             // Submit per object — see the doc comment on `render`.
@@ -315,7 +409,7 @@ impl Runtime {
             self.begin_and_end_clear_pass(&mut tail_encoder, background);
         }
 
-        self.copy_target_to_readback(&mut tail_encoder);
+        self.copy_resolve_to_readback(&mut tail_encoder);
         self.queue.submit(Some(tail_encoder.finish()));
         self.readback_pixels()
     }
@@ -324,8 +418,8 @@ impl Runtime {
         let _pass = encoder.begin_render_pass(&wgpu::RenderPassDescriptor {
             label: Some("manim-rs clear pass"),
             color_attachments: &[Some(wgpu::RenderPassColorAttachment {
-                view: &self.color_view,
-                resolve_target: None,
+                view: &self.msaa_view,
+                resolve_target: Some(&self.resolve_view),
                 depth_slice: None,
                 ops: wgpu::Operations {
                     load: wgpu::LoadOp::Clear(wgpu::Color {
@@ -344,10 +438,10 @@ impl Runtime {
         });
     }
 
-    fn copy_target_to_readback(&self, encoder: &mut wgpu::CommandEncoder) {
+    fn copy_resolve_to_readback(&self, encoder: &mut wgpu::CommandEncoder) {
         encoder.copy_texture_to_buffer(
             wgpu::TexelCopyTextureInfo {
-                texture: &self.color_target,
+                texture: &self.resolve_target,
                 mip_level: 0,
                 origin: wgpu::Origin3d::ZERO,
                 aspect: wgpu::TextureAspect::All,
@@ -396,6 +490,69 @@ impl Runtime {
         Ok(out)
     }
 }
+
+fn create_geometry_resources(
+    device: &wgpu::Device,
+    label_prefix: &str,
+    bind_group_layout: &wgpu::BindGroupLayout,
+) -> (wgpu::Buffer, wgpu::Buffer, wgpu::Buffer, wgpu::BindGroup) {
+    let vertex_buf = device.create_buffer(&wgpu::BufferDescriptor {
+        label: Some(&format!("{label_prefix} vertex buffer")),
+        size: GEOMETRY_BUFFER_SIZE,
+        usage: wgpu::BufferUsages::VERTEX | wgpu::BufferUsages::COPY_DST,
+        mapped_at_creation: false,
+    });
+    let index_buf = device.create_buffer(&wgpu::BufferDescriptor {
+        label: Some(&format!("{label_prefix} index buffer")),
+        size: GEOMETRY_BUFFER_SIZE,
+        usage: wgpu::BufferUsages::INDEX | wgpu::BufferUsages::COPY_DST,
+        mapped_at_creation: false,
+    });
+    let uniform_buf = device.create_buffer(&wgpu::BufferDescriptor {
+        label: Some(&format!("{label_prefix} uniform buffer")),
+        size: UNIFORM_SIZE,
+        usage: wgpu::BufferUsages::UNIFORM | wgpu::BufferUsages::COPY_DST,
+        mapped_at_creation: false,
+    });
+    let bind_group = device.create_bind_group(&wgpu::BindGroupDescriptor {
+        label: Some(&format!("{label_prefix} bind group")),
+        layout: bind_group_layout,
+        entries: &[wgpu::BindGroupEntry {
+            binding: 0,
+            resource: uniform_buf.as_entire_binding(),
+        }],
+    });
+    (vertex_buf, index_buf, uniform_buf, bind_group)
+}
+
+fn modulate_color(base: RgbaSrgb, color_override: Option<RgbaSrgb>, opacity: f32) -> RgbaSrgb {
+    let mut c = color_override.unwrap_or(base);
+    c[3] *= opacity;
+    c
+}
+
+fn check_geometry_size(v_len: u64, i_len: u64) -> Result<(), RuntimeError> {
+    if v_len > GEOMETRY_BUFFER_SIZE {
+        return Err(RuntimeError::GeometryOverflow {
+            kind: "vertex",
+            needed: v_len,
+            cap: GEOMETRY_BUFFER_SIZE,
+        });
+    }
+    if i_len > GEOMETRY_BUFFER_SIZE {
+        return Err(RuntimeError::GeometryOverflow {
+            kind: "index",
+            needed: i_len,
+            cap: GEOMETRY_BUFFER_SIZE,
+        });
+    }
+    Ok(())
+}
+
+// Silence unused-import warnings — `FillMesh` is part of the public-ish API
+// surface for tests but only used here through the tessellator helpers.
+#[allow(dead_code)]
+type _FillMeshAlias = FillMesh;
 
 #[cfg(test)]
 mod tests {

@@ -1,49 +1,38 @@
-//! Stroke pipeline — vertex/fragment shaders + render pipeline + uniforms.
-//!
-//! One uniform buffer, one bind group, one pipeline. Rewritten per draw via
-//! `queue.write_buffer`; Slice C may introduce a uniform ring buffer for
-//! multi-frame pipelining.
+//! Fill pipeline — solid-color filled paths (Polyline interiors and BezPath
+//! interiors). Sibling to `path_stroke`; shares the same `Uniforms` layout but
+//! uses a position-only vertex (no `uv`) since we don't sample anything yet.
 
 use bytemuck::{Pod, Zeroable};
-use glam::Mat4;
 
 use crate::MSAA_SAMPLE_COUNT;
-use crate::tessellator::Vertex;
+use crate::pipelines::path_stroke::{StrokeUniforms, UNIFORM_SIZE};
 
-/// Matches the `Uniforms` struct in `shaders/path_stroke.wgsl`.
-/// `mat4x4<f32>` = 64 bytes, `vec4<f32>` = 16 bytes. No padding needed.
+/// Fill mesh vertex — position only. Stroke vertices have an extra `uv`; the
+/// fill pipeline doesn't need it, so we keep a tighter layout.
 #[repr(C)]
 #[derive(Copy, Clone, Debug, Pod, Zeroable)]
-pub struct StrokeUniforms {
-    pub mvp: [[f32; 4]; 4],
-    pub color: [f32; 4],
+pub struct FillVertex {
+    pub position: [f32; 2],
 }
 
-impl StrokeUniforms {
-    pub fn new(mvp: Mat4, color: [f32; 4]) -> Self {
-        Self {
-            mvp: mvp.to_cols_array_2d(),
-            color,
-        }
-    }
-}
+/// Reuses `StrokeUniforms`: the layout `{ mat4x4 mvp, vec4 color }` is what
+/// both shaders read. Aliasing the type avoids two near-identical structs.
+pub type FillUniforms = StrokeUniforms;
 
-pub const UNIFORM_SIZE: u64 = std::mem::size_of::<StrokeUniforms>() as u64;
-
-pub struct StrokePipeline {
+pub struct FillPipeline {
     pub pipeline: wgpu::RenderPipeline,
     pub bind_group_layout: wgpu::BindGroupLayout,
 }
 
-impl StrokePipeline {
+impl FillPipeline {
     pub fn new(device: &wgpu::Device, color_format: wgpu::TextureFormat) -> Self {
         let shader = device.create_shader_module(wgpu::ShaderModuleDescriptor {
-            label: Some("path_stroke.wgsl"),
-            source: wgpu::ShaderSource::Wgsl(include_str!("../shaders/path_stroke.wgsl").into()),
+            label: Some("path_fill.wgsl"),
+            source: wgpu::ShaderSource::Wgsl(include_str!("../shaders/path_fill.wgsl").into()),
         });
 
         let bind_group_layout = device.create_bind_group_layout(&wgpu::BindGroupLayoutDescriptor {
-            label: Some("stroke uniforms layout"),
+            label: Some("fill uniforms layout"),
             entries: &[wgpu::BindGroupLayoutEntry {
                 binding: 0,
                 visibility: wgpu::ShaderStages::VERTEX | wgpu::ShaderStages::FRAGMENT,
@@ -57,30 +46,23 @@ impl StrokePipeline {
         });
 
         let pipeline_layout = device.create_pipeline_layout(&wgpu::PipelineLayoutDescriptor {
-            label: Some("stroke pipeline layout"),
+            label: Some("fill pipeline layout"),
             bind_group_layouts: &[Some(&bind_group_layout)],
             immediate_size: 0,
         });
 
         let vertex_buffer_layout = wgpu::VertexBufferLayout {
-            array_stride: std::mem::size_of::<Vertex>() as u64,
+            array_stride: std::mem::size_of::<FillVertex>() as u64,
             step_mode: wgpu::VertexStepMode::Vertex,
-            attributes: &[
-                wgpu::VertexAttribute {
-                    format: wgpu::VertexFormat::Float32x2,
-                    offset: 0,
-                    shader_location: 0,
-                },
-                wgpu::VertexAttribute {
-                    format: wgpu::VertexFormat::Float32x2,
-                    offset: 8,
-                    shader_location: 1,
-                },
-            ],
+            attributes: &[wgpu::VertexAttribute {
+                format: wgpu::VertexFormat::Float32x2,
+                offset: 0,
+                shader_location: 0,
+            }],
         };
 
         let pipeline = device.create_render_pipeline(&wgpu::RenderPipelineDescriptor {
-            label: Some("stroke pipeline"),
+            label: Some("fill pipeline"),
             layout: Some(&pipeline_layout),
             vertex: wgpu::VertexState {
                 module: &shader,
@@ -102,7 +84,6 @@ impl StrokePipeline {
                 topology: wgpu::PrimitiveTopology::TriangleList,
                 strip_index_format: None,
                 front_face: wgpu::FrontFace::Ccw,
-                // lyon emits both windings; cull nothing for Slice B.
                 cull_mode: None,
                 polygon_mode: wgpu::PolygonMode::Fill,
                 unclipped_depth: false,
