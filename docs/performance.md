@@ -116,16 +116,154 @@ After ADR 0005 moved `Arc<Object>` out of the IR and into `manim-rs-eval::Evalua
 
 ---
 
+## New observations (2026-04-22 review pass)
+
+Added after a fresh read across `crates/manim-rs-eval`, `raster`, `runtime`,
+`encode`, and the pyo3 boundary. **N9 is the prerequisite** — without
+instrumentation we're guessing about relative cost. Everything else is
+sequenced on the assumption that gets done first.
+
+### N9. No timing instrumentation anywhere — the meta-fix
+
+`perf_probe.py` measures wallclock totals; there is no per-stage breakdown.
+We cannot currently answer "of the 18 ms/frame at 1080p, how much is eval
+vs. tessellation vs. GPU submit vs. readback vs. ffmpeg pipe?" Every O-item
+above is sized by guesswork.
+
+**Lever:** `tracing` spans at four boundaries in `manim-rs-runtime::render_to_mp4`:
+`eval_at`, `raster::render`, `readback`, `encoder::push_frame`. Chrome-trace
+JSON dump behind a `--trace-json` CLI flag. One afternoon; gates prioritisation
+of O2/O3/O4/O8a.
+
+### N1. `eval_at` allocates fresh collections per frame
+
+`crates/manim-rs-eval/src/lib.rs::active_objects_at` builds a fresh
+`Vec<ObjectId>`, `HashSet<ObjectId>`, `HashMap<ObjectId, &Arc<Object>>`, and
+final result `Vec` on every call. For a 27-object × 480-frame render that's
+~2000 heap allocations just to answer "who's alive?" — and the timeline is
+sorted and immutable after `Evaluator::new`.
+
+**Lever:** precompute per-object `(add_t, remove_t)` intervals once in
+`Evaluator::new`; eval_at becomes a linear scan with zero allocations.
+
+### N2. `SceneState.objects` Vec is rebuilt and dropped per frame
+
+`Evaluator::eval_at` returns `SceneState` by value; the caller (runtime loop)
+drops it and lets the next call allocate a fresh `Vec`. No buffer reuse.
+
+**Lever:** expose `eval_at_into(&mut SceneState)` so the runtime reuses one
+allocation across all frames. Trivial. Pairs with N1.
+
+### N3. `evaluate_track` is O(segments) linear per-call, per-track
+
+`crates/manim-rs-eval/src/lib.rs` scans every segment per track on each
+`eval_at`. Calls from the render loop are strictly monotonic in `t`, so a
+cursor per track would make it amortized O(1).
+
+**Lever:** stateful `FrameEvaluator` that remembers cursor positions across
+monotonically-increasing `t`; falls back to `partition_point` for seeky
+scrubbing. Worthwhile once scenes have many segments — not yet critical.
+
+### N4. Lyon tessellator + `VertexBuffers` allocated per object per frame
+
+`crates/manim-rs-raster/src/tessellator.rs:157-186` — each call to
+`tessellate_stroke_path` / `tessellate_fill_path` does
+`VertexBuffers::new()` and a fresh `StrokeTessellator::new()` /
+`FillTessellator::new()`. Both tessellator objects are reusable across calls
+per lyon's docs.
+
+**Lever:** hold one `StrokeTessellator`, one `FillTessellator`, and
+reusable `VertexBuffers<Vertex, u32>` + `VertexBuffers<FillVertex, u32>` on
+`Runtime`. Independent of O4 (cache); compounds with it.
+
+### N6. Render + encode are strictly serial
+
+`crates/manim-rs-runtime/src/lib.rs:40-45` — `render` blocks on
+`device.poll(wait_indefinitely)`, unpads readback, copies into `Vec`,
+`encoder.push_frame(...)` writes to ffmpeg stdin, then frame N+1 starts.
+GPU and ffmpeg pipe alternate idle phases. Probably the single biggest 4K
+win on top of in-process encoding (O6).
+
+**Lever:** depth-2 pipeline — `std::sync::mpsc::sync_channel<Vec<u8>>(1)` with
+a dedicated writer thread owning `Encoder::push_frame`. Frame N+1's render
+starts immediately after submit; readback is moved off the main thread.
+Pairs with O8a.
+
+### N7. Readback row-by-row copy (4K-sensitive)
+
+`crates/manim-rs-raster/src/lib.rs:479-487` — `extend_from_slice` per row.
+At 4K that's 2160 calls per frame. When `padded_bytes_per_row ==
+unpadded_bytes_per_row` (widths whose `width*4` is a multiple of 256, e.g.
+1920×1080 → 7680) the entire copy collapses to one `extend_from_slice`.
+
+**Lever:** fast path the no-padding case. Sub-ms today; material at 4K.
+
+### N10. `poll(wait_indefinitely)` has no timeout or diagnostic
+
+`crates/manim-rs-raster/src/lib.rs` — if the GPU driver stalls (bug, hang,
+driver reset), the render loop waits forever with no log line.
+
+**Lever:** wrap with `wait_for(Duration::from_secs(5))` (or `PollType::Wait`
+with timeout in newer wgpu) and log a warning. Cheap defence-in-depth.
+
+### N11. `depythonize_scene` does three tree walks per render
+
+`crates/manim-rs-py/src/lib.rs:37-39` + `python/manim_rs/cli.py:151`:
+msgspec builds a Python dict, pyo3's `pythonize::depythonize` walks it into a
+`PyAny` tree, and serde reconstructs `Scene` from that. Three passes over
+the same data. Cost is **per-render**, not per-frame.
+
+**Lever:** skip the Python dict intermediate — `msgspec.json.encode(scene_ir)
+→ bytes → serde_json::from_slice` on the Rust side. One walk instead of
+three. Pairs with O1 (caching `Runtime`).
+
+### N12. `eval_at` pyo3 entrypoint rebuilds `Evaluator` per call
+
+`crates/manim-rs-py/src/lib.rs:73-78` — each Python `eval_at(ir, t)` call
+re-depythonizes the scene and compiles a fresh `Evaluator`. Fine for one-shot,
+but kills the O7 vision of "free interactive scrubbing from Python" — every
+frame pays both costs.
+
+**Lever:** expose a `PyEvaluator` class that holds a compiled `Evaluator`
+across calls. Cheap once the shape of interactive use is clear.
+
+### N13. Readback buffer residency turns into memory bloat once `Runtime` is cached (O10 follow-up)
+
+If O1 lands (cache `Runtime`), the 33 MB readback buffer at 4K becomes a
+permanent ~200 MB resident baseline per cached Runtime. Currently freed
+between calls.
+
+**Lever:** pool or shrink-on-idle. Don't silently cement O10's memory
+footprint when implementing O1.
+
+### N14. ffmpeg stderr is never drained during encode
+
+`crates/manim-rs-encode/src/lib.rs` — stderr is captured but only read after
+`wait()` on encoder finish. Long renders with chatty ffmpeg output
+(occasional libx264 warnings even at `loglevel error`) can fill the pipe's
+kernel buffer and block ffmpeg on stderr writes — which stalls stdin →
+stalls our `push_frame` write → deadlock.
+
+**Lever:** spawn a stderr-drain thread in `Encoder::start` that reads and
+discards (or captures into a ring buffer for error diagnostics). Pairs
+with O11 (progress output) — both want a stderr reader.
+
+---
+
 ## Priority order (if doing a perf pass)
 
 Rough cost/benefit for a future batched pass:
 
-1. **O11 — progress output** — trivial, fixes the "is it hung?" UX at high resolutions immediately.
-2. **O1 — cache Runtime** — cheap, big win for interactive/short renders.
-3. **O7 — parallel chunked rendering at CLI** — cheap, 3–4× wins on long renders (real core headroom confirmed).
-4. **O9 — encoder quality knob** — cheap, prevents silent quality regressions.
-5. **O4 — tessellation cache** — medium cost, proportional benefit with scene complexity.
-6. **O3 — per-object submit refactor** — medium cost, unlocks many-object scenes (now with concrete 13k-submit evidence).
-7. **O6 / O8a — in-process encoder** — higher cost, only worth it at 1080p+.
+1. **N9 — instrumentation** — prerequisite. Everything below is guesswork until we can measure per-stage time.
+2. **O11 — progress output** — trivial, fixes the "is it hung?" UX at high resolutions immediately.
+3. **N14 — ffmpeg stderr drain** — cheap, closes a latent deadlock on long renders. Pairs with O11.
+4. **O1 — cache Runtime** — cheap, big win for interactive/short renders. Pair with N13 so caching doesn't silently pin 200 MB.
+5. **O7 — parallel chunked rendering at CLI** — cheap, 3–4× wins on long renders (real core headroom confirmed).
+6. **O9 — encoder quality knob** — cheap, prevents silent quality regressions.
+7. **N4 + N1 + N2 — per-frame allocator churn** — small, compounding wins once N9 proves eval/tess time is meaningful.
+8. **O4 — tessellation cache** — medium cost, proportional benefit with scene complexity.
+9. **N6 — render/encode pipelining** — medium cost, probably the biggest 4K win before O6.
+10. **O3 — per-object submit refactor** — medium cost, unlocks many-object scenes (now with concrete 13k-submit evidence).
+11. **O6 / O8a — in-process encoder** — higher cost, only worth it at 1080p+.
 
-Items 1–4 are the fastest route to making every real-world render feel snappier and safer.
+Items 1–6 are the fastest route to making every real-world render feel snappier and safer.

@@ -25,6 +25,55 @@ Color space note: values are stored in **sRGB** space (no gamma correction on th
 
 ---
 
+## Coordinate conventions
+
+The IR does not name its coordinate frame in every field. These conventions are
+assumed globally:
+
+- **Y axis points up.** Same as manimgl. The Rust rasterizer builds an
+  orthographic projection with +Y up; the ffmpeg-encoded mp4 inherits that
+  orientation (wgpu readback is top-down row-order; the encoder consumes rows
+  in that order, producing upright video).
+- **Camera frame is hardcoded** at `[-8.0, 8.0] × [-4.5, 4.5]` scene units in
+  Slice B/C. Aspect matches a 16:9 output container; letterboxing is the
+  renderer's problem when an output resolution disagrees. Exposing a
+  per-scene camera is deferred (see `CameraSet` op in "What's not here").
+- **All positions are in scene units**, not pixels. `Stroke.width` too. A
+  `stroke_width` of `0.04` is ~0.25% of scene width.
+- **Z is authored but dropped by the raster path.** Every `Vec3` retains three
+  components on the wire and round-trips through serde/msgspec unchanged;
+  `tessellator.rs` projects to 2D via `point(x, y)`. Authoring non-zero `z`
+  today has no visible effect but remains valid — the schema does not bump
+  when raster learns to use it.
+- **Time is in seconds**, not frames. Frames are an output-side concept
+  (`metadata.fps` × `metadata.duration`). `Time` values may be fractional.
+- **Angles are in radians.** `RotationSegment` values match numpy / manimgl.
+- **Fill winding is non-zero.** Self-intersecting closed paths fill the
+  inner region under the non-zero rule. Authored scenes that want even-odd
+  semantics must decompose the shape themselves.
+
+## Alpha and color conventions
+
+- **RGBA is straight (non-premultiplied) at the wire layer.** `RgbaSrgb`
+  components are `[0, 1]` floats; `a` is an independent channel. The Rust
+  raster path premultiplies at draw time (via `modulate_color` in
+  `crates/manim-rs-raster/src/lib.rs`); the IR does not.
+- **Opacity composes multiplicatively with authored alpha.** The evaluator
+  produces a per-frame `opacity: f32` via `OpacityTrack` (default `1.0`); the
+  rasterizer multiplies the authored `Stroke.color[3]` / `Fill.color[3]`
+  channel by that opacity before blending.
+- **Color-track semantics are "last-write override", not tween-from-authored.**
+  When an active `ColorTrack` segment covers `t`, the emitted
+  `SceneState.objects[i].color_override` *replaces* the object's authored
+  stroke/fill color entirely for that frame. `Colorize` animations author an
+  explicit `from_color`/`to_color` pair (see `docs/porting-notes/transforms.md`)
+  rather than relying on evaluator-side snapshotting.
+- **sRGB values enter the GPU as-is.** The framebuffer is `Rgba8UnormSrgb`;
+  wgpu gamma-encodes on write so blending math happens in approximately
+  linear space. Shader code receives sRGB-space floats; it does not gamma-decode.
+
+---
+
 ## Scene
 
 ```jsonc
@@ -144,7 +193,7 @@ Every segment carries `t0: Time`, `t1: Time`, `from`, `to`, `easing: Easing`. Th
 | `Opacity` | `OpacitySegment` | `f32` | Multiplicative, default 1.0. |
 | `Rotation` | `RotationSegment` | `f32` (radians) | Matches manimgl / numpy convention. |
 | `Scale` | `ScaleSegment` | `f32` | Uniform scale; 1.0 is identity. Per-axis scale deferred. |
-| `Color` | `ColorSegment` | `RgbaSrgb` | Stroke/fill tint; lerped componentwise. |
+| `Color` | `ColorSegment` | `RgbaSrgb` | **Override**, not tint. Active segment's value replaces the authored stroke/fill color on `SceneState.color_override`; last-active-wins across parallel color tracks. |
 
 Segment rules (all tracks):
 
@@ -175,6 +224,51 @@ All 15 manimgl rate functions. Every variant carries `"kind": "<name>"`. Paramet
 | `SquishRateFunc` | `inner: Easing`, `a: f32`, `b: f32` | `inner((t−a)/(b−a))` clamped outside `[a, b]` |
 
 `NotQuiteThere` and `SquishRateFunc` are recursive — `inner` is itself an `Easing`, encoded with its own `kind` tag.
+
+---
+
+## SceneState (evaluator output)
+
+`Scene` is the *input* to the evaluator. The *output* — returned from
+`Evaluator::eval_at(t)` and surfaced to Python via `eval_at(scene, t)` — is
+`SceneState`:
+
+```jsonc
+{
+  "objects": [
+    {
+      "id": 1,
+      "object": { /* Object — same shape as Scene.timeline[_].object */ },
+      "position": [x, y, z],          // Vec3, defaults to [0,0,0]
+      "opacity": 1.0,                 // f32, defaults to 1.0
+      "rotation": 0.0,                // f32 radians, defaults to 0.0
+      "scale": 1.0,                   // f32, defaults to 1.0
+      "color_override": null          // RgbaSrgb | null — see below
+    }
+    // ... one entry per object alive at t, in Add order
+  ]
+}
+```
+
+- `objects` is ordered by the first `Add` time of each `id` in the timeline —
+  this is the render order (earlier adds draw first / beneath later adds). Re-
+  `Add`ing an `id` after a `Remove` does not change its slot in the render
+  order; the first ever `Add` defines it.
+- Fields other than `object` are **evaluated track samples**. Absent tracks
+  yield the listed default. Multiple `PositionTrack`s / `OpacityTrack`s / etc.
+  on the same `id` compose (position summed, opacity multiplied, rotation
+  summed, scale multiplied — see `crates/manim-rs-eval/src/lib.rs` for the
+  canonical rule per kind).
+- `color_override` is `null` unless a `ColorTrack` is active at `t`. When it
+  is, the rasterizer uses this value instead of the authored
+  `Stroke.color` / `Fill.color`. Opacity is *still* applied on top (straight
+  alpha × `opacity`).
+- Pythonize round-trip: `Vec3` / `RgbaSrgb` arrive on the Python side as
+  tuples, not lists (see `docs/gotchas.md`).
+
+Drift risk: if new evaluator outputs get added (e.g. per-camera state), keep
+this section authoritative over the Rust struct — Python consumers read this
+shape via pythonize without the benefit of type hints from the Rust side.
 
 ---
 
