@@ -11,8 +11,8 @@
 use std::path::Path;
 
 use manim_rs_ir::{
-    Easing, Object, PositionSegment, Resolution, SCHEMA_VERSION, Scene, SceneMetadata, TimelineOp,
-    Track,
+    Easing, Object, PositionSegment, Resolution, SCHEMA_VERSION, Scene, SceneMetadata, Stroke,
+    TimelineOp, Track,
 };
 use manim_rs_runtime::render_to_mp4;
 
@@ -22,7 +22,10 @@ fn main() {
             schema_version: SCHEMA_VERSION,
             fps: 30,
             duration: 2.0,
-            resolution: Resolution { width: 480, height: 270 },
+            resolution: Resolution {
+                width: 480,
+                height: 270,
+            },
             background: [0.0, 0.0, 0.0, 1.0],
         },
         timeline: vec![TimelineOp::Add {
@@ -35,9 +38,12 @@ fn main() {
                     [1.0, 1.0, 0.0],
                     [-1.0, 1.0, 0.0],
                 ],
-                stroke_color: [1.0, 1.0, 1.0, 1.0],
-                stroke_width: 0.08,
                 closed: true,
+                stroke: Some(Stroke {
+                    color: [1.0, 1.0, 1.0, 1.0],
+                    width: 0.08,
+                }),
+                fill: None,
             },
         }],
         tracks: vec![Track::Position {
@@ -53,6 +59,6 @@ fn main() {
     };
 
     let out = Path::new("/tmp/slice_b_square.mp4");
-    render_to_mp4(&scene, out).expect("render_to_mp4");
+    render_to_mp4(scene, out).expect("render_to_mp4");
     println!("wrote {}", out.display());
 }

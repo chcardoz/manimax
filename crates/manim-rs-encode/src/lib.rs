@@ -69,13 +69,11 @@ pub struct Encoder {
 
 impl Encoder {
     /// Spawn ffmpeg and prepare to accept frames.
-    pub fn start(
-        output: &Path,
-        width: u32,
-        height: u32,
-        fps: u32,
-    ) -> Result<Self, EncodeError> {
-        assert!(width > 0 && height > 0 && fps > 0, "non-zero dims/fps required");
+    pub fn start(output: &Path, width: u32, height: u32, fps: u32) -> Result<Self, EncodeError> {
+        assert!(
+            width > 0 && height > 0 && fps > 0,
+            "non-zero dims/fps required"
+        );
 
         if let Some(parent) = output.parent() {
             if !parent.as_os_str().is_empty() && !parent.exists() {
@@ -123,7 +121,10 @@ impl Encoder {
     pub fn push_frame(&mut self, rgba: &[u8]) -> Result<(), EncodeError> {
         let expected = (self.width * self.height * 4) as usize;
         if rgba.len() != expected {
-            return Err(EncodeError::FrameSizeMismatch { expected, got: rgba.len() });
+            return Err(EncodeError::FrameSizeMismatch {
+                expected,
+                got: rgba.len(),
+            });
         }
         let stdin = self.stdin.as_mut().ok_or(EncodeError::StdinMissing)?;
         stdin.write_all(rgba).map_err(EncodeError::WriteFailed)
@@ -143,7 +144,10 @@ impl Encoder {
         if let Some(mut err) = self.child.stderr.take() {
             let _ = err.read_to_string(&mut stderr);
         }
-        Err(EncodeError::NonZeroExit { code: status.code(), stderr })
+        Err(EncodeError::NonZeroExit {
+            code: status.code(),
+            stderr,
+        })
     }
 }
 
@@ -166,7 +170,10 @@ mod tests {
     #[test]
     fn frame_size_mismatch_reports_bytes() {
         // Smoke-test error formatting without spawning ffmpeg.
-        let err = EncodeError::FrameSizeMismatch { expected: 100, got: 99 };
+        let err = EncodeError::FrameSizeMismatch {
+            expected: 100,
+            got: 99,
+        };
         assert!(err.to_string().contains("100"));
         assert!(err.to_string().contains("99"));
     }

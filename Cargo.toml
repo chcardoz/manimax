@@ -36,6 +36,7 @@ bytemuck = { version = "1", features = ["derive"] }
 
 # Python binding
 pyo3 = { version = "0.23", features = ["extension-module", "abi3-py310"] }
+pythonize = "0.23"
 
 # Error handling
 thiserror = "2"

@@ -15,11 +15,51 @@ Check this file before starting a session in the relevant area. Add an entry any
 Fix lives in: `crates/manim-rs-py/src/lib.rs:49`.
 Verify by: `grep -R 'fn allow_threads\|fn detach' ~/.cargo/registry/src/*pyo3*` (or wherever cargo caches pyo3).
 
+### pythonize returns tuples for fixed-size Rust arrays
+
+Rust `[f32; 3]` (the `Vec3` alias) round-trips through `pythonize` as a Python **tuple**, not a list. Tests that compare `state["objects"][0]["position"] == [0.0, 0.0, 0.0]` fail with the diff `(0.0, 0.0, 0.0) == [0.0, 0.0, 0.0]`. `msgspec.to_builtins` on the *input* side also produces tuples for `Vec3`, so the shape is tuple-in / tuple-out end-to-end.
+
+Fix: write assertions as tuples (`== (0.0, 0.0, 0.0)`) or normalize with `list(...)` before comparing. Example: `tests/python/test_eval_at.py`.
+
 ### Shell-chaining + venv cwd trap
 
 `cd /foo && cargo test ; source .venv/bin/activate` can fail because the activation step resolves `.venv` relative to whatever cwd the shell lands in after the previous command, not the repo root. Agents using `Bash` with `;`-separated chains have hit this.
 
 Fix: **use the absolute path** — `source /Users/chcardoz/conductor/workspaces/manimax/islamabad/.venv/bin/activate` — or keep activation as its own first command and chain the rest with `&&`.
+
+### Depythonize before `py.allow_threads`, not after
+
+`pythonize::depythonize` touches Python objects — it requires the GIL. The
+pattern in `crates/manim-rs-py/src/lib.rs::render_to_mp4` deliberately
+depythonizes the scene **first**, then calls `py.allow_threads(move || …)`
+over the GIL-free render loop:
+
+```rust
+let mut scene = depythonize_scene(ir)?;   // needs GIL
+// … optional mutation …
+py.allow_threads(move || rust_render_to_mp4(scene, &out_path))
+```
+
+Reordering these ("release the GIL earlier so Python can do other work during
+depythonize") crashes inside pyo3 with an abort. Same rule for `eval_at`:
+build the `Evaluator` (which consumes the `Scene`) outside `allow_threads`.
+
+Fix lives in: `crates/manim-rs-py/src/lib.rs:50-68`.
+
+### msgspec / pyo3 tagged-union field order is tolerant — don't rely on it
+
+`pythonize::depythonize` reads fields by *name*, not position, so a Python
+msgspec Struct whose fields appear in a different order than the Rust serde
+struct still deserializes correctly as long as every tagged-union discriminator
+(`kind`, `op`) is present in the payload. This is convenient but makes
+ordering bugs invisible: reordering fields on one side and not the other
+silently "works" — until a consumer that *does* depend on order (an external
+tool, a pretty-printer, a future binary format) breaks.
+
+**Rule:** keep Python msgspec Struct field order aligned with the Rust struct
+declaration. The round-trip tests don't catch mis-ordering today; the schema
+drift guard in `tests/python/test_ir_roundtrip.py` is the closest thing and
+only asserts structural equality after re-serialization.
 
 ---
 
@@ -65,6 +105,14 @@ Slice B uses #1. Slice C should upgrade to #3 if per-frame submit count becomes 
 
 Regression test: `crates/manim-rs-raster/tests/multi_object.rs` renders two separated squares and asserts both show up. This test fails against the old single-submit code.
 
+### MSAA resolve target must match color target format + dimensions exactly
+
+`RenderPassDescriptor::color_attachments[0].resolve_target` must point to a texture with the **same format** as the multisampled color texture and the **same `width × height`**. A format mismatch (e.g. resolve `Rgba8Unorm` vs color `Rgba8UnormSrgb`) or a size mismatch panics inside wgpu with a message that doesn't immediately name the offending pair.
+
+Fix lives in: `crates/manim-rs-raster/src/lib.rs` — the `msaa_color_target` and `resolve_target` descriptors share `COLOR_FORMAT`, `width`, `height` by construction. Keep them paired; don't let one drift.
+
+Sample count is the other axis — the render pipeline's `multisample.count` must match the color attachment's `sample_count` (both `MSAA_SAMPLE_COUNT = 4`). `StrokePipeline::new` and `FillPipeline::new` both read the constant; new pipelines should too.
+
 ### 256-byte row alignment on readback
 
 wgpu requires `bytes_per_row` for buffer↔texture copies to be a multiple of 256. At 480×4 bpp, the natural row is 1920 B and you must pad to 2048 B. On the CPU readback path, strip the padding back out.
@@ -81,7 +129,15 @@ Fix lives in: `crates/manim-rs-raster/src/lib.rs` — `align_up` + the `readback
 
 Same rule on the Python side: msgspec Structs that carry only a tag must still be a class body, not a bare tag constant.
 
-Caught by: the parametrized 7-site unknown-field test in `tests/python/test_ir_roundtrip.py`. See also ADR 0002's addendum.
+Caught by: the parametrized unknown-field test matrix in `tests/python/test_ir_roundtrip.py` (21 sites as of Slice C). See also ADR 0002's addendum.
+
+### Round-trip equality on f32 fields needs dyadic rationals
+
+IR scalar fields (e.g. `Easing::ExponentialDecay.half_life`, `Stroke.width`) are `f32` in Rust but `float` (f64) in Python. The wire path is: Python f64 → ryu shortest decimal → serde f32 → ryu shortest decimal → msgspec f64. For values like `0.1` or `1.0/3.0`, the f32 round-trip produces a *different* f64 bit pattern (e.g. `0.3333333333333333` goes to `0.33333334`), so structural `==` on decoded msgspec structs fails even though the wire contract is sound.
+
+Fix in tests: use dyadic rationals (`0.25`, `0.125`, `0.5`, `2.0`) for any float parameter that a round-trip test compares with `==`. Don't "fix" this by switching fields to `f64` — f32 is correct for graphics-adjacent values; the issue is the test fixture, not the schema.
+
+Caught by: `test_every_easing_roundtrips_through_rust` flagging `ThereAndBackWithPauseEasing(pause_ratio=1.0/3.0)` during Slice C Step 2.
 
 ---
 
@@ -107,15 +163,51 @@ Pixel-check tests that assert "bright pixels exist somewhere in frame 0" need a 
 
 If you need to test that the *renderer* output survives, split the test: one hits `Runtime::render` directly (no encoder), one hits `render_to_mp4` with a beefier stroke.
 
+### ffmpeg stderr must be drained during encode, not just at finish
+
+`crates/manim-rs-encode/src/lib.rs` captures ffmpeg's stderr into a pipe but
+only reads it *after* `wait()` on encoder finish. For short renders this is
+fine — stderr stays well under the kernel pipe buffer (64 KiB on Linux,
+smaller on macOS). For long renders with chatty ffmpeg output (the
+occasional libx264 warning leaks through even at `-loglevel error`), the
+pipe can fill, at which point:
+
+1. ffmpeg blocks on its next `write(stderr)`.
+2. Our `push_frame` writes to stdin; ffmpeg can't drain stdin while blocked on stderr.
+3. Our write blocks.
+4. Deadlock.
+
+Not observed yet (short renders + `-loglevel error` keep stderr quiet), but
+the shape is latent and will bite once renders run for minutes.
+
+**Fix direction:** spawn a stderr-drain thread in `Encoder::start` that
+reads + discards (or keeps a ring buffer for error diagnostics). See
+`docs/performance.md` N14 — pairs with O11 (progress output), since both
+want a reader on one of the encoder's pipes.
+
+Testing note: the current `tests/python/test_render_to_mp4.py` and
+`crates/manim-rs-runtime/tests/end_to_end.rs` run short (≤ 2 s of video),
+so they would not surface this deadlock.
+
 ### Pixel-exact snapshot constants are platform-pinned
 
 `crates/manim-rs-raster/tests/snapshot.rs` pins an RGBA byte-sum and non-zero count for the canonical Slice B scene. Values are mac arm64 + Metal + wgpu 29. On a different backend (Vulkan on Linux, D3D12 on Windows) they will drift — that's expected, not a bug. Update under scrutiny: verify the *kind* of drift (all channels scaled uniformly vs. only some pixels changing) before bumping the constants.
+
+Slice C migrated these to tolerance-based checks (sum ± N, nonzero count ± N). Any new snapshot test must follow suit — do not re-introduce exact byte pins. ADR `0004 §E`.
+
+### H.264 / yuv420p chroma subsampling shifts solid fill colors
+
+Solid fill `(0, 229, 51)` (the integration scene's green teardrop) decodes back as approximately `(0, 240, 120)` after the libx264 + yuv420p round trip. Chroma subsampling is 2:2:0 so 2×2 pixel blocks share chroma, and gamut compression on the sRGB → BT.709 conversion nudges the hue. This is not a renderer bug.
+
+Per-object color-band tests (`tests/python/test_integration_scene.py`) tune their RGB tolerance accordingly — e.g. the green mask accepts G ≥ 150 with B up to 150. Tightening those bands without a lossless output path will produce spurious failures.
+
+If we ever expose a lossless-raw output (e.g. `ffv1` or raw RGBA mp4), add a separate test path with tight bands against that codec — don't try to tune one set of bounds to cover both.
 
 ### lyon dedupes sub-epsilon stroke points — circles can't force overflow
 
 A unit circle with 500 000 tessellation points collapses to ~282 vertices in lyon because neighbours are sub-epsilon apart. If you're calibrating a `GeometryOverflow` test (or any "what if input is huge" tessellator test), use non-coincident points — e.g. a zigzag `[-5 + 10i/n, ±1, 0]` forces every segment to a distinct diagonal that lyon can't merge.
 
-Working calibration: zigzag @ n=3000 → 6002 vertices = 96 032 B > 64 KiB vertex cap. See `crates/manim-rs-raster/tests/edge_cases.rs::oversized_polyline_returns_geometry_overflow`.
+Working calibration: zigzag @ n=3000 → 6002 tessellated vertices > `MAX_VERTICES_PER_OBJECT = 4096` cap. See `crates/manim-rs-raster/tests/edge_cases.rs::oversized_polyline_returns_geometry_overflow`.
 
 ---
 

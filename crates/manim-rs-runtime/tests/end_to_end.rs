@@ -5,8 +5,8 @@ use std::path::PathBuf;
 use std::process::Command;
 
 use manim_rs_ir::{
-    Easing, Object, PositionSegment, Resolution, SCHEMA_VERSION, Scene, SceneMetadata, TimelineOp,
-    Track,
+    Easing, Object, PositionSegment, Resolution, SCHEMA_VERSION, Scene, SceneMetadata, Stroke,
+    TimelineOp, Track,
 };
 use manim_rs_runtime::render_to_mp4;
 
@@ -22,7 +22,10 @@ fn short_slice_b_scene(fps: u32, duration: f64) -> Scene {
             schema_version: SCHEMA_VERSION,
             fps,
             duration,
-            resolution: Resolution { width: 128, height: 72 },
+            resolution: Resolution {
+                width: 128,
+                height: 72,
+            },
             background: [0.0, 0.0, 0.0, 1.0],
         },
         timeline: vec![TimelineOp::Add {
@@ -35,9 +38,12 @@ fn short_slice_b_scene(fps: u32, duration: f64) -> Scene {
                     [1.0, 1.0, 0.0],
                     [-1.0, 1.0, 0.0],
                 ],
-                stroke_color: [1.0, 1.0, 1.0, 1.0],
-                stroke_width: 0.1,
                 closed: true,
+                stroke: Some(Stroke {
+                    color: [1.0, 1.0, 1.0, 1.0],
+                    width: 0.1,
+                }),
+                fill: None,
             },
         }],
         tracks: vec![Track::Position {
@@ -60,7 +66,7 @@ fn render_short_scene_to_mp4() {
 
     // 15 fps × 0.4s = 6 frames. Small enough to run fast in CI.
     let scene = short_slice_b_scene(15, 0.4);
-    render_to_mp4(&scene, &path).expect("render_to_mp4");
+    render_to_mp4(scene, &path).expect("render_to_mp4");
     assert!(path.exists(), "mp4 not written");
 
     let probe = Command::new("ffprobe")

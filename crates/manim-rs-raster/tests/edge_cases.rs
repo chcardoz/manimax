@@ -7,7 +7,7 @@
 //!   vertex buffer exceeds 64 KiB.
 
 use manim_rs_eval::{ObjectState, SceneState};
-use manim_rs_ir::{Object, Vec3};
+use manim_rs_ir::{Object, Stroke, Vec3};
 use manim_rs_raster::{Camera, Runtime, RuntimeError};
 
 const WIDTH: u32 = 128;
@@ -21,9 +21,12 @@ fn small_square(cx: f32, cy: f32, half: f32) -> Object {
             [cx + half, cy + half, 0.0],
             [cx - half, cy + half, 0.0],
         ] as Vec<Vec3>,
-        stroke_color: [1.0, 1.0, 1.0, 1.0],
-        stroke_width: 0.2,
         closed: true,
+        stroke: Some(Stroke {
+            color: [1.0, 1.0, 1.0, 1.0],
+            width: 0.2,
+        }),
+        fill: None,
     }
 }
 
@@ -38,7 +41,11 @@ fn empty_scene_is_flat_background() {
     let bg = [0.5_f64, 0.5, 0.5, 1.0];
 
     let pixels = runtime
-        .render(&SceneState { objects: vec![] }, &Camera::SLICE_B_DEFAULT, bg)
+        .render(
+            &SceneState { objects: vec![] },
+            &Camera::SLICE_B_DEFAULT,
+            bg,
+        )
         .expect("render");
 
     assert_eq!(pixels.len(), (WIDTH * HEIGHT * 4) as usize);
@@ -76,28 +83,19 @@ fn degenerate_polyline_is_skipped_siblings_still_render() {
             let pts: Vec<Vec3> = vec![[0.0, 0.0, 0.0], [0.0, 0.0, 0.0]];
             pts
         },
-        stroke_color: [1.0, 1.0, 1.0, 1.0],
-        stroke_width: 0.2,
         closed: false,
+        stroke: Some(Stroke {
+            color: [1.0, 1.0, 1.0, 1.0],
+            width: 0.2,
+        }),
+        fill: None,
     };
 
     let state = SceneState {
         objects: vec![
-            ObjectState {
-                id: 1,
-                object: small_square(-3.0, 0.0, 0.4),
-                position: [0.0, 0.0, 0.0],
-            },
-            ObjectState {
-                id: 2,
-                object: degenerate,
-                position: [0.0, 0.0, 0.0],
-            },
-            ObjectState {
-                id: 3,
-                object: small_square(3.0, 0.0, 0.4),
-                position: [0.0, 0.0, 0.0],
-            },
+            ObjectState::with_defaults(1, small_square(-3.0, 0.0, 0.4), [0.0, 0.0, 0.0]),
+            ObjectState::with_defaults(2, degenerate, [0.0, 0.0, 0.0]),
+            ObjectState::with_defaults(3, small_square(3.0, 0.0, 0.4), [0.0, 0.0, 0.0]),
         ],
     };
 
@@ -125,9 +123,9 @@ fn degenerate_polyline_is_skipped_siblings_still_render() {
 
 #[test]
 fn oversized_polyline_returns_geometry_overflow() {
-    // Buffer cap is 64 KiB / 16 B per vertex = 4096 vertices. lyon emits
-    // several vertices per segment; a proper zigzag (non-coincident points
-    // lyon can't collapse) reliably overflows the cap above ~1K segments.
+    // Vertex cap is MAX_VERTICES_PER_OBJECT = 4096. lyon emits several
+    // vertices per segment; a proper zigzag (non-coincident points lyon
+    // can't collapse) reliably overflows the cap above ~1K segments.
     let runtime = Runtime::new(WIDTH, HEIGHT).expect("runtime");
 
     let n = 3_000usize;
@@ -141,16 +139,19 @@ fn oversized_polyline_returns_geometry_overflow() {
     }
 
     let state = SceneState {
-        objects: vec![ObjectState {
-            id: 1,
-            object: Object::Polyline {
+        objects: vec![ObjectState::with_defaults(
+            1,
+            Object::Polyline {
                 points,
-                stroke_color: [1.0, 1.0, 1.0, 1.0],
-                stroke_width: 0.2,
                 closed: true,
+                stroke: Some(Stroke {
+                    color: [1.0, 1.0, 1.0, 1.0],
+                    width: 0.2,
+                }),
+                fill: None,
             },
-            position: [0.0, 0.0, 0.0],
-        }],
+            [0.0, 0.0, 0.0],
+        )],
     };
 
     match runtime.render(&state, &Camera::SLICE_B_DEFAULT, [0.0, 0.0, 0.0, 1.0]) {
@@ -164,9 +165,7 @@ fn oversized_polyline_returns_geometry_overflow() {
                 "unexpected overflow kind: {kind}",
             );
         }
-        Ok(_) => panic!(
-            "expected GeometryOverflow for {n}-point polyline, but render succeeded",
-        ),
+        Ok(_) => panic!("expected GeometryOverflow for {n}-point polyline, but render succeeded",),
         Err(e) => panic!("expected GeometryOverflow, got {e:?}"),
     }
 }
