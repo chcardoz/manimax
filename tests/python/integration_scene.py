@@ -30,7 +30,7 @@ from manim_rs import (
     Overshoot,
     Polyline,
     Rotate,
-    ScaleTo,
+    ScaleBy,
     Scene,
     Smooth,
     ThereAndBack,
@@ -104,7 +104,7 @@ class IntegrationScene(Scene):
             # Green teardrop: fade in + scale pop (overshoot on scale makes the
             # "pop" look intentional, not like a bug).
             FadeIn(green_teardrop, duration=SCENE_DURATION * 0.5),
-            ScaleTo(
+            ScaleBy(
                 green_teardrop,
                 1.3,
                 duration=SCENE_DURATION,

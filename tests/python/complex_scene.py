@@ -14,7 +14,7 @@ Composition:
   a phase-shifted translation (ThereAndBack on a different radius),
   rotation (NotQuiteThere(Smooth)), and a staggered fade-in.
 - **Outer frame** — 4 corner BezPath squiggles doing synchronised
-  ScaleTo + Colorize, outside the orbit to frame the composition.
+  ScaleBy + Colorize, outside the orbit to frame the composition.
 - **Background trails** — 6 long diagonal strokes fading in and out,
   each with RunningStart easing so they feel like shooting stars.
 
@@ -34,7 +34,7 @@ from manim_rs import (
     Polyline,
     Rotate,
     RunningStart,
-    ScaleTo,
+    ScaleBy,
     Scene,
     Smooth,
     ThereAndBack,
@@ -168,7 +168,7 @@ class ComplexScene(Scene):
         anims = []
 
         # Pulsar: scale Overshoot, rotate smoothly, colorize through magenta→cyan.
-        anims.append(ScaleTo(pulsar, 1.4, duration=DURATION, easing=Overshoot(pull_factor=1.8)))
+        anims.append(ScaleBy(pulsar, 1.4, duration=DURATION, easing=Overshoot(pull_factor=1.8)))
         anims.append(Rotate(pulsar, 2.0 * math.pi, duration=DURATION, easing=Smooth()))
         anims.append(
             Colorize(
@@ -211,7 +211,7 @@ class ComplexScene(Scene):
 
         # Corner squiggles: simultaneous scale-pop + rainbow colorize.
         for i, sq in enumerate(squiggles):
-            anims.append(ScaleTo(sq, 1.3, duration=DURATION, easing=ThereAndBack()))
+            anims.append(ScaleBy(sq, 1.3, duration=DURATION, easing=ThereAndBack()))
             anims.append(
                 Colorize(
                     sq,

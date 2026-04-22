@@ -43,9 +43,11 @@ same behaviour here.
   `AddOp`, so `Translate` means "offset relative to where the object was born".
   Manimgl's `ApplyMethod(obj.shift, delta)` is shape-equivalent but applies
   by mutation — our version is not stateful.
-- **`ScaleTo`, not `Scale`.** Name chosen to avoid confusion with a possible
-  future "scale-by" verb. Target value is *absolute*: `ScaleTo(obj, 2.0, 1.0)`
-  scales the object from 1× to 2×.
+- **`ScaleBy`, not `ScaleTo`.** The emitted segment is `from=1.0, to=factor`
+  and scale tracks compose *multiplicatively* across all active tracks on an
+  object, so `ScaleBy(obj, 2.0)` then `ScaleBy(obj, 1.5)` lands at 3× the
+  authored size. An absolute-target verb (override semantics, like `Colorize`)
+  can be added later as a separate primitive if needed.
 - **`Colorize` is an override, not a tween of the authored color.**
   Color-track semantics in the evaluator are "last-write override" —
   the active color-track sample *replaces* the authored object color for the
@@ -73,7 +75,7 @@ same behaviour here.
 |---|---|---|---|
 | `Translate(obj, delta, duration, *, easing=None)` | `PositionTrack` | `(0,0,0) → delta` | Offset relative to base position. |
 | `Rotate(obj, angle, duration, *, easing=None)` | `RotationTrack` | `0.0 → angle` | Radians; manimgl convention. |
-| `ScaleTo(obj, factor, duration, *, easing=None)` | `ScaleTrack` | `1.0 → factor` | Absolute target. |
+| `ScaleBy(obj, factor, duration, *, easing=None)` | `ScaleTrack` | `1.0 → factor` | Multiplicative; composes across tracks. |
 | `FadeIn(obj, duration, *, easing=None)` | `OpacityTrack` | `0.0 → 1.0` | |
 | `FadeOut(obj, duration, *, easing=None)` | `OpacityTrack` | `1.0 → 0.0` | |
 | `Colorize(obj, from_color, to_color, duration, *, easing=None)` | `ColorTrack` | `from → to` (override) | Both colors required; replaces authored. |

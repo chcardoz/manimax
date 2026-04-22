@@ -127,11 +127,14 @@ class Rotate:
         ]
 
 
-class ScaleTo:
-    """Scale from 1.0 to ``factor`` over ``duration``.
+class ScaleBy:
+    """Scale the object by ``factor`` over ``duration``.
 
-    Name is ``ScaleTo`` rather than ``Scale`` to avoid confusion with any
-    future "scale-by" verb: the target value here is absolute.
+    Multiplicative and composes with other scale animations: the evaluator
+    multiplies across all active ScaleTracks on an object, so
+    ``ScaleBy(o, 2)`` then ``ScaleBy(o, 1.5)`` lands at 3× the authored size.
+    An absolute-scale verb (override, not compose) can be added later as a
+    separate primitive.
     """
 
     __slots__ = ("obj", "factor", "duration", "easing")
@@ -146,11 +149,11 @@ class ScaleTo:
     ) -> None:
         self.obj = obj
         self.factor = float(factor)
-        self.duration = _check_duration(duration, "ScaleTo")
+        self.duration = _check_duration(duration, "ScaleBy")
         self.easing: ir.Easing = easing or _default_easing()
 
     def emit(self, t_start: float) -> list[ir.Track]:
-        oid = _require_id(self.obj, "ScaleTo")
+        oid = _require_id(self.obj, "ScaleBy")
         return [
             ir.ScaleTrack(
                 id=oid,

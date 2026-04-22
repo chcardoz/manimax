@@ -7,7 +7,7 @@ from manim_rs.animate.transforms import (
     FadeIn,
     FadeOut,
     Rotate,
-    ScaleTo,
+    ScaleBy,
     Translate,
 )
 
@@ -44,7 +44,7 @@ __all__ = [
     "RunningStart",
     "RushFrom",
     "RushInto",
-    "ScaleTo",
+    "ScaleBy",
     "SlowInto",
     "Smooth",
     "SquishRateFunc",
