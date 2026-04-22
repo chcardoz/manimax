@@ -96,7 +96,9 @@ class Scene:
         for anim in animations:
             longest = max(longest, anim.duration)
             for track in anim.emit(t_start):
-                self._absorb_track(track)
+                if not isinstance(track, ir.PositionTrack):
+                    raise TypeError(f"unhandled track kind: {type(track).__name__}")
+                self._position_segments.setdefault(track.id, []).extend(track.segments)
         self._t = t_start + longest
 
     # ------------------------------------------------------------------
@@ -122,12 +124,3 @@ class Scene:
             tracks=tuple(tracks),
         )
 
-    # ------------------------------------------------------------------
-    # Internal
-    # ------------------------------------------------------------------
-
-    def _absorb_track(self, track: ir.Track) -> None:
-        if isinstance(track, ir.PositionTrack):
-            self._position_segments.setdefault(track.id, []).extend(track.segments)
-        else:  # pragma: no cover — only PositionTrack exists in Slice B
-            raise TypeError(f"unhandled track kind: {type(track).__name__}")
