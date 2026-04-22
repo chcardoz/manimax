@@ -1,7 +1,7 @@
 """Slice B Step 8 exit criterion — end-to-end render through the pyo3 binding.
 
-Builds a Scene via the Python API, hands the encoded IR to
-``manim_rs._rust.render_to_mp4``, and ffprobes the resulting file.
+Slice C migrated the FFI from a JSON string to a dict via pythonize;
+``ir.to_builtins(scene.ir)`` is the canonical way to prepare the IR payload.
 """
 
 from __future__ import annotations
@@ -11,7 +11,6 @@ import subprocess
 from pathlib import Path
 
 import pytest
-
 from manim_rs import _rust, ir
 from manim_rs.animate.transforms import Translate
 from manim_rs.objects.geometry import Polyline
@@ -37,8 +36,7 @@ def test_render_to_mp4_produces_valid_file(tmp_path: Path) -> None:
     scene = _build_scene()
     out = tmp_path / "py_out.mp4"
 
-    ir_json = ir.encode(scene.ir).decode("utf-8")
-    _rust.render_to_mp4(ir_json, str(out))
+    _rust.render_to_mp4(ir.to_builtins(scene.ir), str(out))
 
     assert out.exists(), "mp4 was not written"
     assert out.stat().st_size > 0, "mp4 is empty"
@@ -46,12 +44,15 @@ def test_render_to_mp4_produces_valid_file(tmp_path: Path) -> None:
     probe = subprocess.run(
         [
             "ffprobe",
-            "-v", "error",
-            "-select_streams", "v:0",
+            "-v",
+            "error",
+            "-select_streams",
+            "v:0",
             "-count_frames",
             "-show_entries",
             "stream=width,height,avg_frame_rate,codec_name,nb_read_frames",
-            "-of", "default=noprint_wrappers=1",
+            "-of",
+            "default=noprint_wrappers=1",
             str(out),
         ],
         capture_output=True,
@@ -70,9 +71,8 @@ def test_render_to_mp4_produces_valid_file(tmp_path: Path) -> None:
 def test_render_to_mp4_fps_override(tmp_path: Path) -> None:
     scene = _build_scene()
     out = tmp_path / "py_out_override.mp4"
-    ir_json = ir.encode(scene.ir).decode("utf-8")
     # Override the fps; scene authored at 15, render at 30.
-    _rust.render_to_mp4(ir_json, str(out), fps=30)
+    _rust.render_to_mp4(ir.to_builtins(scene.ir), str(out), fps=30)
 
     assert out.exists()
 
@@ -82,10 +82,14 @@ def test_render_to_mp4_fps_override(tmp_path: Path) -> None:
     probe = subprocess.run(
         [
             "ffprobe",
-            "-v", "error",
-            "-select_streams", "v:0",
-            "-show_entries", "stream=avg_frame_rate",
-            "-of", "default=noprint_wrappers=1",
+            "-v",
+            "error",
+            "-select_streams",
+            "v:0",
+            "-show_entries",
+            "stream=avg_frame_rate",
+            "-of",
+            "default=noprint_wrappers=1",
             str(out),
         ],
         capture_output=True,
@@ -97,14 +101,13 @@ def test_render_to_mp4_fps_override(tmp_path: Path) -> None:
 
 def test_render_to_mp4_rejects_zero_fps(tmp_path: Path) -> None:
     scene = _build_scene()
-    ir_json = ir.encode(scene.ir).decode("utf-8")
     with pytest.raises(ValueError, match="fps must be positive"):
-        _rust.render_to_mp4(ir_json, str(tmp_path / "zero.mp4"), fps=0)
+        _rust.render_to_mp4(ir.to_builtins(scene.ir), str(tmp_path / "zero.mp4"), fps=0)
 
 
 def test_render_to_mp4_rejects_bad_ir(tmp_path: Path) -> None:
-    with pytest.raises(ValueError, match="IR deserialize failed"):
-        _rust.render_to_mp4("{not json", str(tmp_path / "bad.mp4"))
+    with pytest.raises(ValueError, match="IR depythonize failed"):
+        _rust.render_to_mp4({"not": "a scene"}, str(tmp_path / "bad.mp4"))
 
 
 @pytest.mark.skipif(shutil.which("ffmpeg") is None, reason="ffmpeg not on PATH")
@@ -130,15 +133,21 @@ def test_render_to_mp4_frame0_has_content_at_origin(tmp_path: Path) -> None:
     scene.add(square)
     scene.wait(0.2)
     out = tmp_path / "centroid.mp4"
-    _rust.render_to_mp4(ir.encode(scene.ir).decode("utf-8"), str(out))
+    _rust.render_to_mp4(ir.to_builtins(scene.ir), str(out))
 
     raw = subprocess.run(
         [
             "ffmpeg",
-            "-v", "error",
-            "-i", str(out),
-            "-vframes", "1",
-            "-f", "rawvideo", "-pix_fmt", "rgba",
+            "-v",
+            "error",
+            "-i",
+            str(out),
+            "-vframes",
+            "1",
+            "-f",
+            "rawvideo",
+            "-pix_fmt",
+            "rgba",
             "-",
         ],
         capture_output=True,

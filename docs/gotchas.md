@@ -15,6 +15,12 @@ Check this file before starting a session in the relevant area. Add an entry any
 Fix lives in: `crates/manim-rs-py/src/lib.rs:49`.
 Verify by: `grep -R 'fn allow_threads\|fn detach' ~/.cargo/registry/src/*pyo3*` (or wherever cargo caches pyo3).
 
+### pythonize returns tuples for fixed-size Rust arrays
+
+Rust `[f32; 3]` (the `Vec3` alias) round-trips through `pythonize` as a Python **tuple**, not a list. Tests that compare `state["objects"][0]["position"] == [0.0, 0.0, 0.0]` fail with the diff `(0.0, 0.0, 0.0) == [0.0, 0.0, 0.0]`. `msgspec.to_builtins` on the *input* side also produces tuples for `Vec3`, so the shape is tuple-in / tuple-out end-to-end.
+
+Fix: write assertions as tuples (`== (0.0, 0.0, 0.0)`) or normalize with `list(...)` before comparing. Example: `tests/python/test_eval_at.py`.
+
 ### Shell-chaining + venv cwd trap
 
 `cd /foo && cargo test ; source .venv/bin/activate` can fail because the activation step resolves `.venv` relative to whatever cwd the shell lands in after the previous command, not the repo root. Agents using `Bash` with `;`-separated chains have hit this.

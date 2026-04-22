@@ -562,6 +562,7 @@ name = "manim-rs-eval"
 version = "0.0.0"
 dependencies = [
  "manim-rs-ir",
+ "serde",
 ]
 
 [[package]]
@@ -582,6 +583,7 @@ dependencies = [
  "manim-rs-raster",
  "manim-rs-runtime",
  "pyo3",
+ "pythonize",
  "serde_json",
 ]
 
@@ -909,6 +911,16 @@ dependencies = [
  "pyo3-build-config",
  "quote",
  "syn",
+]
+
+[[package]]
+name = "pythonize"
+version = "0.23.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "91a6ee7a084f913f98d70cdc3ebec07e852b735ae3059a1500db2661265da9ff"
+dependencies = [
+ "pyo3",
+ "serde",
 ]
 
 [[package]]

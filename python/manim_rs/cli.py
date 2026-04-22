@@ -48,6 +48,5 @@ def render(
         raise typer.BadParameter("fps must be positive", param_hint="--fps")
 
     scene = _build_slice_b_scene(duration=duration, fps=fps)
-    ir_json = ir.encode(scene.ir).decode("utf-8")
-    _rust.render_to_mp4(ir_json, str(out))
+    _rust.render_to_mp4(ir.to_builtins(scene.ir), str(out))
     typer.echo(f"wrote {out}")

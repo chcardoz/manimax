@@ -165,3 +165,14 @@ def decode(data: bytes | str) -> Scene:
     if isinstance(data, str):
         data = data.encode("utf-8")
     return _decoder.decode(data)
+
+
+def to_builtins(scene: Scene) -> dict:
+    """Convert a Scene into a plain dict/list/scalar tree for the Rust FFI.
+
+    pythonize's depythonize expects mapping protocol, which msgspec.Struct does
+    not implement directly — msgspec.to_builtins gives a JSON-compatible Python
+    object tree (with tag fields injected for tagged unions) that pythonize
+    turns into the serde-typed Scene in one hop.
+    """
+    return msgspec.to_builtins(scene)

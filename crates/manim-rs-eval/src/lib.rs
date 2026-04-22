@@ -10,9 +10,10 @@
 //! Reimplemented, not ported.
 
 use manim_rs_ir::{Easing, Object, ObjectId, PositionSegment, Scene, Time, Track, Vec3};
+use serde::{Deserialize, Serialize};
 
 /// A single object's state at a given time — what the rasterizer draws.
-#[derive(Debug, Clone, PartialEq)]
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct ObjectState {
     pub id: ObjectId,
     pub object: Object,
@@ -20,7 +21,7 @@ pub struct ObjectState {
 }
 
 /// The whole scene's state at a given time.
-#[derive(Debug, Clone, PartialEq, Default)]
+#[derive(Debug, Clone, PartialEq, Default, Serialize, Deserialize)]
 pub struct SceneState {
     pub objects: Vec<ObjectState>,
 }
@@ -39,7 +40,11 @@ pub fn eval_at(scene: &Scene, t: Time) -> SceneState {
             None => continue,
         };
         let position = sum_position_tracks(scene, id, t);
-        objects.push(ObjectState { id, object, position });
+        objects.push(ObjectState {
+            id,
+            object,
+            position,
+        });
     }
     SceneState { objects }
 }
@@ -67,14 +72,22 @@ fn active_ids_at(scene: &Scene, t: Time) -> Vec<ObjectId> {
         }
     }
 
-    first_seen.into_iter().filter(|id| active.get(id).copied().unwrap_or(false)).collect()
+    first_seen
+        .into_iter()
+        .filter(|id| active.get(id).copied().unwrap_or(false))
+        .collect()
 }
 
 fn latest_add_object<'a>(scene: &'a Scene, id: ObjectId, t: Time) -> Option<&'a Object> {
     use manim_rs_ir::TimelineOp::Add;
     let mut last: Option<&Object> = None;
     for op in &scene.timeline {
-        if let Add { t: op_t, id: op_id, object } = op {
+        if let Add {
+            t: op_t,
+            id: op_id,
+            object,
+        } = op
+        {
             if *op_id == id && *op_t <= t {
                 last = Some(object);
             }
@@ -89,7 +102,10 @@ fn sum_position_tracks(scene: &Scene, id: ObjectId, t: Time) -> Vec3 {
     let mut out = [0.0_f32; 3];
     for track in &scene.tracks {
         match track {
-            Track::Position { id: track_id, segments } if *track_id == id => {
+            Track::Position {
+                id: track_id,
+                segments,
+            } if *track_id == id => {
                 let contribution = evaluate_position_track(segments, t);
                 out[0] += contribution[0];
                 out[1] += contribution[1];
@@ -141,12 +157,15 @@ fn lerp_vec3(a: Vec3, b: Vec3, alpha: f32) -> Vec3 {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use manim_rs_ir::{
-        Resolution, SCHEMA_VERSION, SceneMetadata, TimelineOp,
-    };
+    use manim_rs_ir::{Resolution, SCHEMA_VERSION, SceneMetadata, TimelineOp};
 
     fn square_points() -> Vec<Vec3> {
-        vec![[-1.0, -1.0, 0.0], [1.0, -1.0, 0.0], [1.0, 1.0, 0.0], [-1.0, 1.0, 0.0]]
+        vec![
+            [-1.0, -1.0, 0.0],
+            [1.0, -1.0, 0.0],
+            [1.0, 1.0, 0.0],
+            [-1.0, 1.0, 0.0],
+        ]
     }
 
     fn make_scene(timeline: Vec<TimelineOp>, tracks: Vec<Track>, duration: Time) -> Scene {
@@ -155,7 +174,10 @@ mod tests {
                 schema_version: SCHEMA_VERSION,
                 fps: 30,
                 duration,
-                resolution: Resolution { width: 480, height: 270 },
+                resolution: Resolution {
+                    width: 480,
+                    height: 270,
+                },
                 background: [0.0, 0.0, 0.0, 1.0],
             },
             timeline,
@@ -174,7 +196,11 @@ mod tests {
 
     fn slice_b_scene() -> Scene {
         make_scene(
-            vec![TimelineOp::Add { t: 0.0, id: 1, object: polyline() }],
+            vec![TimelineOp::Add {
+                t: 0.0,
+                id: 1,
+                object: polyline(),
+            }],
             vec![Track::Position {
                 id: 1,
                 segments: vec![PositionSegment {
@@ -219,7 +245,11 @@ mod tests {
     fn removed_object_disappears() {
         let scene = make_scene(
             vec![
-                TimelineOp::Add { t: 0.0, id: 1, object: polyline() },
+                TimelineOp::Add {
+                    t: 0.0,
+                    id: 1,
+                    object: polyline(),
+                },
                 TimelineOp::Remove { t: 1.0, id: 1 },
             ],
             vec![],
@@ -234,7 +264,11 @@ mod tests {
     #[test]
     fn object_without_track_sits_at_origin() {
         let scene = make_scene(
-            vec![TimelineOp::Add { t: 0.0, id: 1, object: polyline() }],
+            vec![TimelineOp::Add {
+                t: 0.0,
+                id: 1,
+                object: polyline(),
+            }],
             vec![],
             1.0,
         );
@@ -245,7 +279,11 @@ mod tests {
     #[test]
     fn not_yet_added_object_absent() {
         let scene = make_scene(
-            vec![TimelineOp::Add { t: 1.0, id: 1, object: polyline() }],
+            vec![TimelineOp::Add {
+                t: 1.0,
+                id: 1,
+                object: polyline(),
+            }],
             vec![],
             2.0,
         );
@@ -256,7 +294,11 @@ mod tests {
     #[test]
     fn two_parallel_position_tracks_sum() {
         let scene = make_scene(
-            vec![TimelineOp::Add { t: 0.0, id: 1, object: polyline() }],
+            vec![TimelineOp::Add {
+                t: 0.0,
+                id: 1,
+                object: polyline(),
+            }],
             vec![
                 Track::Position {
                     id: 1,
@@ -288,7 +330,11 @@ mod tests {
     #[test]
     fn gap_between_segments_holds_last_to() {
         let scene = make_scene(
-            vec![TimelineOp::Add { t: 0.0, id: 1, object: polyline() }],
+            vec![TimelineOp::Add {
+                t: 0.0,
+                id: 1,
+                object: polyline(),
+            }],
             vec![Track::Position {
                 id: 1,
                 segments: vec![
@@ -319,7 +365,11 @@ mod tests {
         // Covers the explicit `if seg.t1 == seg.t0 { 1.0 }` branch — without
         // which this would divide by zero and produce NaN.
         let scene = make_scene(
-            vec![TimelineOp::Add { t: 0.0, id: 1, object: polyline() }],
+            vec![TimelineOp::Add {
+                t: 0.0,
+                id: 1,
+                object: polyline(),
+            }],
             vec![Track::Position {
                 id: 1,
                 segments: vec![PositionSegment {
@@ -341,9 +391,17 @@ mod tests {
         // liveness per op, not latch on the first Add.
         let scene = make_scene(
             vec![
-                TimelineOp::Add    { t: 0.0, id: 1, object: polyline() },
+                TimelineOp::Add {
+                    t: 0.0,
+                    id: 1,
+                    object: polyline(),
+                },
                 TimelineOp::Remove { t: 1.0, id: 1 },
-                TimelineOp::Add    { t: 2.0, id: 1, object: polyline() },
+                TimelineOp::Add {
+                    t: 2.0,
+                    id: 1,
+                    object: polyline(),
+                },
                 TimelineOp::Remove { t: 3.0, id: 1 },
             ],
             vec![],

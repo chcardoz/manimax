@@ -1,28 +1,25 @@
 # Status
 
 **Last updated:** 2026-04-21
-**Current slice:** Slice B — shipped and patched; this session expanded test coverage following a post-slice audit.
+**Current slice:** Slice C — planned (`docs/slices/slice-c.md`), Step 1 complete.
 
 ## Last session did
 
-- **Audited test coverage** against Slice B's surface area and agreed on a plan to plug the gaps. Polyline-specific tests deferred (geometry will grow soon). Upgrade C (FFI `_rust.eval_at` pyfunction) deferred to Slice C's FFI revamp.
-- **IR schema fix — `Easing::Linear` → `Easing::Linear {}`.** Parametrized unknown-field test caught that serde's `deny_unknown_fields` silently ignores extras on *unit* variants under an internal tag. Switched to an empty-struct variant across `manim-rs-ir`, `manim-rs-eval`, `manim-rs-runtime` (wire format unchanged). Rejection now works at all seven IR sites.
-- **New Rust tests:**
-  - `crates/manim-rs-eval/src/lib.rs` — zero-duration segment (jumps to endpoint); multi add/remove cycles (track liveness across re-add).
-  - `crates/manim-rs-raster/tests/edge_cases.rs` — empty-scene clear is flat background; degenerate polyline skipped but siblings render; oversized polyline returns `GeometryOverflow` (calibrated zigzag @ n=3000 → 6002 vertices, lyon dedupes circle arcs so they didn't trigger).
-  - `crates/manim-rs-raster/tests/snapshot.rs` — pixel-exact RGBA checksum for canonical Slice B scene. Constants (`EXPECTED_SUM=2_350_080`, `EXPECTED_NONZERO=9_216`) are mac arm64 + Metal + wgpu 29; update under scrutiny if they drift.
-  - `crates/manim-rs-raster/tests/multi_object.rs` — three-object scene with centroid placement (±3 px) catches off-by-one iteration bugs and position drift.
-  - `crates/manim-rs-encode/tests/encode_solid.rs` — dropped-encoder releases resources (reuse path test); solid color survives yuv420p roundtrip (±6/255 per channel at center pixel, alpha pinned to 0xFF).
-- **New Python tests:**
-  - `tests/python/test_scene_recording.py` — `Polyline` accepts numpy ndarray; `Scene.remove` emits `RemoveOp` at clock; remove-before-add raises; double-add raises.
-  - `tests/python/test_ir_roundtrip.py` — `ir.decode(str)` round-trip; 7-site × 2-side parametrized unknown-field rejection matrix (Python msgspec + Rust serde).
-  - `tests/python/test_render_to_mp4.py` — frame 0 decoded, centroid sits at pixel (240, 135) for origin-centered square (uses 480×270 + fat stroke because yuv420p crushes stroke 0.1 at 128×72 to sub-threshold).
+- **Wrote Slice C scope.** `docs/slices/slice-c.md`: 5 candidates in (FFI upgrade, second geometry, all tracks, all 15 easings, fill+MSAA), 8-step work breakdown, integration scene as its own step 7, tolerance-based snapshot checksums (supersedes Slice B's platform-pinned ones), cross-platform wheels marked as a parallel workstream. Single consolidated ADR 0004 planned.
+- **Step 1 shipped — FFI upgrade.** `pythonize` replaces the JSON-string FFI; `_rust.render_to_mp4` now takes a Python value (dict from `msgspec.to_builtins`). New pyfunction `_rust.eval_at(ir, t)` returns a pythonized `SceneState`.
+  - Added `pythonize = "0.23"` to workspace deps.
+  - `manim-rs-eval`: added `serde` dep; derived `Serialize`/`Deserialize` on `ObjectState` and `SceneState`.
+  - `ir.py`: new `to_builtins(scene)` helper is the canonical FFI prep path.
+  - `cli.py` + `test_render_to_mp4.py` migrated off the JSON string. `roundtrip_ir` kept as-is (schema drift guard).
+  - New `tests/python/test_eval_at.py` — 6 cases covering start/midpoint/endpoint/past-end/not-yet-live/bad-input.
+- **Repo bootstrap codified.** `scripts/setup.sh` (idempotent: submodules → `uv venv` → deps → `maturin develop`), `conductor.json` points `scripts.setup` at it, `AGENTS.md` "First-time setup" section added above "Dev commands." Closes a gap where `.venv` creation was never documented. Conductor note: UI Scripts panel overrides `conductor.json`, so teammates must clear it.
+- **Gotchas added:** `pythonize` returns tuples for `[f32; 3]`, not lists — every future `state[...]["position"]` assertion needs tuple syntax.
 
-Totals: **28 Rust tests**, **39 Python tests** (up from 19 + 19).
+Totals: **all Rust tests** green (`cargo test --workspace --exclude manim-rs-py`), **45 Python tests** (up from 39; +6 from `test_eval_at.py`).
 
 ## Next action
 
-**Scope Slice C** before writing code. Candidates unchanged — scene file discovery, second geometry (Circle/BezPath/Arc), FFI upgrade to `pythonize`, more easings + tracks, MSAA/fill pipeline. Slice C's plan §5 must include at least one end-to-end test exercising multi-object × multi-track × multi-geometry simultaneously.
+**Slice C Step 2 — IR growth.** Add the `Geometry::BezPath { verbs: Vec<PathVerb> }` variant, new track variants (opacity / rotation / scale / color), and all 15 `Easing` variants (with struct-not-unit bodies per Slice B §10 lesson). Mirror on the Python side in `ir.py`. Extend the 7-site unknown-field rejection matrix to every new site. Update `docs/ir-schema.md`. No evaluator or raster work yet — Step 2 is pure schema + round-trip.
 
 ## Blockers
 
@@ -30,9 +27,9 @@ None.
 
 ## Notes for next session
 
-- The centroid test at 480×270 exists because the 128×72 canonical scene's stroke 0.1 is *not* recoverable from yuv420p — decoded frames round to all zeros. If we later add a higher-resolution canonical fixture, fold the centroid check into `_build_scene`.
-- The pixel-checksum test in `snapshot.rs` pins hardware-dependent values. First update under scrutiny; second time check for a root cause before bumping.
-- Per-object submit in `Runtime::render` still pending an upgrade if frame-rate-sensitive scenes hit submit-count bottlenecks. `docs/gotchas.md` lists two upgrade paths.
+- `cli.py` still hardcodes the Slice B demo scene — scene discovery is Step 6. No urgency to touch it during Step 2.
+- `snapshot.rs` and other Slice B pixel-exact tests still pin mac-arm64/Metal/wgpu-29 values. Step 4 (fill+MSAA) invalidates these and is when we migrate to tolerance-based; don't pre-emptively rewrite them.
+- Step 1's pythonize API path is a gotcha multiplier: `[f32; 3]`, `[f32; 4]`, etc. all become tuples on both FFI edges. Keep it in mind for every new IR field and every test.
 
 ## Convention for updating this file
 
