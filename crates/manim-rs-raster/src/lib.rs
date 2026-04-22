@@ -22,7 +22,7 @@ pub use tessellator::{FillMesh, Mesh, Vertex};
 
 use bytemuck::cast_slice;
 use glam::Mat4;
-use manim_rs_eval::SceneState;
+use manim_rs_eval::{ObjectState, SceneState};
 use manim_rs_ir::{Object, RgbaSrgb};
 
 use crate::pipelines::path_fill::{FillPipeline, FillUniforms};
@@ -38,9 +38,18 @@ const COLOR_FORMAT: wgpu::TextureFormat = wgpu::TextureFormat::Rgba8UnormSrgb;
 /// gives clean sub-pixel coverage for the thin strokes Manimax renders.
 pub const MSAA_SAMPLE_COUNT: u32 = 4;
 
-/// Per-object vertex/index buffer capacity. 64 KiB holds ~4 K vertices or
-/// ~16 K u32 indices — more than enough for Slice C.
-const GEOMETRY_BUFFER_SIZE: u64 = 64 * 1024;
+/// Per-object geometry caps. A single object's tessellated mesh must fit
+/// within both of these or `RuntimeError::GeometryOverflow` fires. Calibrated
+/// for Slice C; raise when real scenes push the ceiling.
+const MAX_VERTICES_PER_OBJECT: u64 = 4096;
+const MAX_INDICES_PER_OBJECT: u64 = 16384;
+
+/// wgpu buffer sizes derived from the count caps. Vertex / index buffers are
+/// sized independently — `sizeof(Vertex)` changes (Slice D will add attrs)
+/// move the vertex-buffer size without touching the index side.
+const VERTEX_BUFFER_SIZE: u64 =
+    MAX_VERTICES_PER_OBJECT * std::mem::size_of::<tessellator::Vertex>() as u64;
+const INDEX_BUFFER_SIZE: u64 = MAX_INDICES_PER_OBJECT * std::mem::size_of::<u32>() as u64;
 
 fn align_up(v: u32, align: u32) -> u32 {
     let r = v % align;
@@ -74,6 +83,19 @@ struct PipeBundle {
     index_buf: wgpu::Buffer,
     uniform_buf: wgpu::Buffer,
     bind_group: wgpu::BindGroup,
+}
+
+/// Paints an `ObjectState` resolves into for one frame. Either side may be
+/// absent (no stroke / no fill, or zero-index mesh after tessellation).
+struct ObjectDraw {
+    fill: Option<(FillMesh, RgbaSrgb)>,
+    stroke: Option<(Mesh, RgbaSrgb)>,
+}
+
+impl ObjectDraw {
+    fn is_empty(&self) -> bool {
+        self.fill.is_none() && self.stroke.is_none()
+    }
 }
 
 pub struct Runtime {
@@ -235,152 +257,22 @@ impl Runtime {
     ) -> Result<Vec<u8>, RuntimeError> {
         let projection = camera.projection();
 
-        // Background clear happens in the first pass; subsequent per-object
-        // passes use `LoadOp::Load` so draws accumulate.
-        let mut first = true;
+        // The first drawn object clears the background; subsequent ones load.
+        let mut needs_clear = true;
         for obj in &state.objects {
-            // Build the per-object transform once.
-            let translation = Mat4::from_translation(glam::Vec3::new(
-                obj.position[0],
-                obj.position[1],
-                obj.position[2],
-            ));
-            let rotation = Mat4::from_rotation_z(obj.rotation);
-            let scale = Mat4::from_scale(glam::Vec3::splat(obj.scale));
-            let mvp = projection * translation * rotation * scale;
-
-            let (fill_mesh, fill_color, stroke_mesh, stroke_color) = match &*obj.object {
-                Object::Polyline {
-                    points,
-                    closed,
-                    stroke,
-                    fill,
-                } => {
-                    let fill_mesh = fill
-                        .as_ref()
-                        .map(|_| tessellate_polyline_fill(points, *closed));
-                    let stroke_mesh = stroke
-                        .as_ref()
-                        .map(|s| tessellate_polyline(points, s.width, *closed));
-                    (
-                        fill_mesh,
-                        fill.as_ref().map(|f| f.color),
-                        stroke_mesh,
-                        stroke.as_ref().map(|s| s.color),
-                    )
-                }
-                Object::BezPath {
-                    verbs,
-                    stroke,
-                    fill,
-                } => {
-                    let fill_mesh = fill.as_ref().map(|_| tessellate_bezpath_fill(verbs));
-                    let stroke_mesh = stroke.as_ref().map(|s| tessellate_bezpath(verbs, s.width));
-                    (
-                        fill_mesh,
-                        fill.as_ref().map(|f| f.color),
-                        stroke_mesh,
-                        stroke.as_ref().map(|s| s.color),
-                    )
-                }
-            };
-
-            // Apply opacity + color override to whichever paints exist.
-            let final_fill_color =
-                fill_color.map(|c| modulate_color(c, obj.color_override, obj.opacity));
-            let final_stroke_color =
-                stroke_color.map(|c| modulate_color(c, obj.color_override, obj.opacity));
-
-            // Skip the object entirely if neither paint produced geometry.
-            let fill_drawable = fill_mesh.as_ref().is_some_and(|m| !m.indices.is_empty());
-            let stroke_drawable = stroke_mesh.as_ref().is_some_and(|m| !m.indices.is_empty());
-            if !fill_drawable && !stroke_drawable {
+            let draw = tessellate_object(obj);
+            if draw.is_empty() {
                 continue;
             }
 
-            let mut encoder = self
-                .device
-                .create_command_encoder(&wgpu::CommandEncoderDescriptor {
-                    label: Some("manim-rs per-object encoder"),
-                });
-
-            if let (Some(mesh), Some(color)) = (fill_mesh.as_ref(), final_fill_color) {
-                if !mesh.indices.is_empty() {
-                    self.upload_mesh(
-                        &self.fill,
-                        cast_slice(&mesh.vertices),
-                        cast_slice(&mesh.indices),
-                        bytemuck::bytes_of(&FillUniforms::new(mvp, color)),
-                    )?;
-                }
-            }
-
-            if let (Some(mesh), Some(color)) = (stroke_mesh.as_ref(), final_stroke_color) {
-                if !mesh.indices.is_empty() {
-                    self.upload_mesh(
-                        &self.stroke,
-                        cast_slice(&mesh.vertices),
-                        cast_slice(&mesh.indices),
-                        bytemuck::bytes_of(&StrokeUniforms::new(mvp, color)),
-                    )?;
-                }
-            }
-
-            let load = if first {
-                first = false;
-                wgpu::LoadOp::Clear(wgpu::Color {
-                    r: background[0],
-                    g: background[1],
-                    b: background[2],
-                    a: background[3],
-                })
+            let mvp = build_mvp(&projection, obj);
+            let load = if needs_clear {
+                needs_clear = false;
+                clear_load(background)
             } else {
                 wgpu::LoadOp::Load
             };
-
-            {
-                let mut pass = encoder.begin_render_pass(&wgpu::RenderPassDescriptor {
-                    label: Some("paint pass"),
-                    color_attachments: &[Some(wgpu::RenderPassColorAttachment {
-                        view: &self.msaa_view,
-                        resolve_target: Some(&self.resolve_view),
-                        depth_slice: None,
-                        ops: wgpu::Operations {
-                            load,
-                            store: wgpu::StoreOp::Store,
-                        },
-                    })],
-                    depth_stencil_attachment: None,
-                    timestamp_writes: None,
-                    occlusion_query_set: None,
-                    multiview_mask: None,
-                });
-
-                if fill_drawable {
-                    let mesh = fill_mesh.as_ref().unwrap();
-                    draw_mesh(
-                        &mut pass,
-                        &self.fill,
-                        cast_slice(&mesh.vertices),
-                        cast_slice(&mesh.indices),
-                        mesh.indices.len() as u32,
-                    );
-                }
-
-                if stroke_drawable {
-                    let mesh = stroke_mesh.as_ref().unwrap();
-                    draw_mesh(
-                        &mut pass,
-                        &self.stroke,
-                        cast_slice(&mesh.vertices),
-                        cast_slice(&mesh.indices),
-                        mesh.indices.len() as u32,
-                    );
-                }
-            }
-
-            // Submit per object — see the doc comment on `render`.
-            self.queue.submit(Some(encoder.finish()));
+            self.render_one_object(&draw, mvp, load)?;
         }
 
         let mut tail_encoder =
@@ -390,13 +282,73 @@ impl Runtime {
                 });
 
         // Empty scenes still need a clear so readback is well-defined.
-        if first {
+        if needs_clear {
             self.begin_and_end_clear_pass(&mut tail_encoder, background);
         }
 
         self.copy_resolve_to_readback(&mut tail_encoder);
         self.queue.submit(Some(tail_encoder.finish()));
         self.readback_pixels()
+    }
+
+    fn render_one_object(
+        &self,
+        draw: &ObjectDraw,
+        mvp: Mat4,
+        load: wgpu::LoadOp<wgpu::Color>,
+    ) -> Result<(), RuntimeError> {
+        let mut encoder = self
+            .device
+            .create_command_encoder(&wgpu::CommandEncoderDescriptor {
+                label: Some("manim-rs per-object encoder"),
+            });
+
+        if let Some((mesh, color)) = &draw.fill {
+            self.upload_mesh(
+                &self.fill,
+                cast_slice(&mesh.vertices),
+                cast_slice(&mesh.indices),
+                bytemuck::bytes_of(&FillUniforms::new(mvp, *color)),
+            )?;
+        }
+        if let Some((mesh, color)) = &draw.stroke {
+            self.upload_mesh(
+                &self.stroke,
+                cast_slice(&mesh.vertices),
+                cast_slice(&mesh.indices),
+                bytemuck::bytes_of(&StrokeUniforms::new(mvp, *color)),
+            )?;
+        }
+
+        {
+            let mut pass = encoder.begin_render_pass(&wgpu::RenderPassDescriptor {
+                label: Some("paint pass"),
+                color_attachments: &[Some(wgpu::RenderPassColorAttachment {
+                    view: &self.msaa_view,
+                    resolve_target: Some(&self.resolve_view),
+                    depth_slice: None,
+                    ops: wgpu::Operations {
+                        load,
+                        store: wgpu::StoreOp::Store,
+                    },
+                })],
+                depth_stencil_attachment: None,
+                timestamp_writes: None,
+                occlusion_query_set: None,
+                multiview_mask: None,
+            });
+
+            if let Some((mesh, _)) = &draw.fill {
+                draw_mesh(&mut pass, &self.fill, mesh.indices.len() as u32);
+            }
+            if let Some((mesh, _)) = &draw.stroke {
+                draw_mesh(&mut pass, &self.stroke, mesh.indices.len() as u32);
+            }
+        }
+
+        // Submit per object — see the doc comment on `render`.
+        self.queue.submit(Some(encoder.finish()));
+        Ok(())
     }
 
     fn begin_and_end_clear_pass(&self, encoder: &mut wgpu::CommandEncoder, color: [f64; 4]) {
@@ -498,13 +450,13 @@ fn build_pipe_bundle(
 ) -> PipeBundle {
     let vertex_buf = device.create_buffer(&wgpu::BufferDescriptor {
         label: Some(&format!("{label_prefix} vertex buffer")),
-        size: GEOMETRY_BUFFER_SIZE,
+        size: VERTEX_BUFFER_SIZE,
         usage: wgpu::BufferUsages::VERTEX | wgpu::BufferUsages::COPY_DST,
         mapped_at_creation: false,
     });
     let index_buf = device.create_buffer(&wgpu::BufferDescriptor {
         label: Some(&format!("{label_prefix} index buffer")),
-        size: GEOMETRY_BUFFER_SIZE,
+        size: INDEX_BUFFER_SIZE,
         usage: wgpu::BufferUsages::INDEX | wgpu::BufferUsages::COPY_DST,
         mapped_at_creation: false,
     });
@@ -531,42 +483,105 @@ fn build_pipe_bundle(
     }
 }
 
-fn draw_mesh(
-    pass: &mut wgpu::RenderPass<'_>,
-    bundle: &PipeBundle,
-    v_bytes: &[u8],
-    i_bytes: &[u8],
-    index_count: u32,
-) {
+fn draw_mesh(pass: &mut wgpu::RenderPass<'_>, bundle: &PipeBundle, index_count: u32) {
     pass.set_pipeline(&bundle.pipeline);
     pass.set_bind_group(0, &bundle.bind_group, &[]);
-    pass.set_vertex_buffer(0, bundle.vertex_buf.slice(..v_bytes.len() as u64));
-    pass.set_index_buffer(
-        bundle.index_buf.slice(..i_bytes.len() as u64),
-        wgpu::IndexFormat::Uint32,
-    );
+    pass.set_vertex_buffer(0, bundle.vertex_buf.slice(..));
+    pass.set_index_buffer(bundle.index_buf.slice(..), wgpu::IndexFormat::Uint32);
     pass.draw_indexed(0..index_count, 0, 0..1);
 }
 
-fn modulate_color(base: RgbaSrgb, color_override: Option<RgbaSrgb>, opacity: f32) -> RgbaSrgb {
-    let mut c = color_override.unwrap_or(base);
-    c[3] *= opacity;
-    c
+fn build_mvp(projection: &Mat4, state: &ObjectState) -> Mat4 {
+    let translation = Mat4::from_translation(glam::Vec3::new(
+        state.position[0],
+        state.position[1],
+        state.position[2],
+    ));
+    let rotation = Mat4::from_rotation_z(state.rotation);
+    let scale = Mat4::from_scale(glam::Vec3::splat(state.scale));
+    *projection * translation * rotation * scale
+}
+
+fn clear_load(background: [f64; 4]) -> wgpu::LoadOp<wgpu::Color> {
+    wgpu::LoadOp::Clear(wgpu::Color {
+        r: background[0],
+        g: background[1],
+        b: background[2],
+        a: background[3],
+    })
+}
+
+/// Tessellate the object's geometry and resolve its paint colors. Returns
+/// an empty `ObjectDraw` (both sides `None`) if no paint produces drawable
+/// indices — the caller skips empty draws.
+fn tessellate_object(state: &ObjectState) -> ObjectDraw {
+    let (fill_raw, stroke_raw) = match &*state.object {
+        Object::Polyline {
+            points,
+            closed,
+            stroke,
+            fill,
+        } => (
+            fill.as_ref()
+                .map(|f| (tessellate_polyline_fill(points, *closed), f.color)),
+            stroke
+                .as_ref()
+                .map(|s| (tessellate_polyline(points, s.width, *closed), s.color)),
+        ),
+        Object::BezPath {
+            verbs,
+            stroke,
+            fill,
+        } => (
+            fill.as_ref()
+                .map(|f| (tessellate_bezpath_fill(verbs), f.color)),
+            stroke
+                .as_ref()
+                .map(|s| (tessellate_bezpath(verbs, s.width), s.color)),
+        ),
+    };
+
+    let fill = fill_raw.and_then(|(mesh, color)| {
+        (!mesh.indices.is_empty()).then(|| {
+            (
+                mesh,
+                with_opacity(resolve_color(color, state.color_override), state.opacity),
+            )
+        })
+    });
+    let stroke = stroke_raw.and_then(|(mesh, color)| {
+        (!mesh.indices.is_empty()).then(|| {
+            (
+                mesh,
+                with_opacity(resolve_color(color, state.color_override), state.opacity),
+            )
+        })
+    });
+    ObjectDraw { fill, stroke }
+}
+
+fn resolve_color(base: RgbaSrgb, color_override: Option<RgbaSrgb>) -> RgbaSrgb {
+    color_override.unwrap_or(base)
+}
+
+fn with_opacity(mut color: RgbaSrgb, opacity: f32) -> RgbaSrgb {
+    color[3] *= opacity;
+    color
 }
 
 fn check_geometry_size(v_len: u64, i_len: u64) -> Result<(), RuntimeError> {
-    if v_len > GEOMETRY_BUFFER_SIZE {
+    if v_len > VERTEX_BUFFER_SIZE {
         return Err(RuntimeError::GeometryOverflow {
             kind: "vertex",
             needed: v_len,
-            cap: GEOMETRY_BUFFER_SIZE,
+            cap: VERTEX_BUFFER_SIZE,
         });
     }
-    if i_len > GEOMETRY_BUFFER_SIZE {
+    if i_len > INDEX_BUFFER_SIZE {
         return Err(RuntimeError::GeometryOverflow {
             kind: "index",
             needed: i_len,
-            cap: GEOMETRY_BUFFER_SIZE,
+            cap: INDEX_BUFFER_SIZE,
         });
     }
     Ok(())

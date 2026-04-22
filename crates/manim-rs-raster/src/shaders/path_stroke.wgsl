@@ -12,7 +12,6 @@ struct Uniforms {
 
 struct VertexIn {
     @location(0) position: vec2<f32>,
-    @location(1) uv: vec2<f32>,
 };
 
 struct VertexOut {

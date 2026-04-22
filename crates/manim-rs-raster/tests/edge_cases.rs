@@ -123,9 +123,9 @@ fn degenerate_polyline_is_skipped_siblings_still_render() {
 
 #[test]
 fn oversized_polyline_returns_geometry_overflow() {
-    // Buffer cap is 64 KiB / 16 B per vertex = 4096 vertices. lyon emits
-    // several vertices per segment; a proper zigzag (non-coincident points
-    // lyon can't collapse) reliably overflows the cap above ~1K segments.
+    // Vertex cap is MAX_VERTICES_PER_OBJECT = 4096. lyon emits several
+    // vertices per segment; a proper zigzag (non-coincident points lyon
+    // can't collapse) reliably overflows the cap above ~1K segments.
     let runtime = Runtime::new(WIDTH, HEIGHT).expect("runtime");
 
     let n = 3_000usize;

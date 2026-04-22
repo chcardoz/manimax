@@ -16,13 +16,11 @@ use manim_rs_ir::{PathVerb, Vec3};
 
 use crate::pipelines::path_fill::FillVertex;
 
-/// Vertex layout uploaded to the GPU. `uv` is unused in Slice B but kept so the
-/// vertex buffer stride stays stable when Slice D adds attributes.
+/// Vertex layout uploaded to the GPU.
 #[repr(C)]
 #[derive(Copy, Clone, Debug, Pod, Zeroable)]
 pub struct Vertex {
     pub position: [f32; 2],
-    pub uv: [f32; 2],
 }
 
 pub struct Mesh {
@@ -42,7 +40,6 @@ impl StrokeVertexConstructor<Vertex> for StrokeCtor {
         let p = v.position();
         Vertex {
             position: [p.x, p.y],
-            uv: [0.0, 0.0],
         }
     }
 }

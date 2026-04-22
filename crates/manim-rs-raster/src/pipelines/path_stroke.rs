@@ -65,18 +65,11 @@ impl StrokePipeline {
         let vertex_buffer_layout = wgpu::VertexBufferLayout {
             array_stride: std::mem::size_of::<Vertex>() as u64,
             step_mode: wgpu::VertexStepMode::Vertex,
-            attributes: &[
-                wgpu::VertexAttribute {
-                    format: wgpu::VertexFormat::Float32x2,
-                    offset: 0,
-                    shader_location: 0,
-                },
-                wgpu::VertexAttribute {
-                    format: wgpu::VertexFormat::Float32x2,
-                    offset: 8,
-                    shader_location: 1,
-                },
-            ],
+            attributes: &[wgpu::VertexAttribute {
+                format: wgpu::VertexFormat::Float32x2,
+                offset: 0,
+                shader_location: 0,
+            }],
         };
 
         let pipeline = device.create_render_pipeline(&wgpu::RenderPipelineDescriptor {
