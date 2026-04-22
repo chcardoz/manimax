@@ -1,33 +1,28 @@
 # Status
 
 **Last updated:** 2026-04-22
-**Current slice:** Slice C — Steps 1–7 complete (`docs/slices/slice-c.md`). Only Step 8 (ADR + retro) remains.
+**Current slice:** Slice C — **shipped.** All eight steps green (`docs/slices/slice-c.md`).
 
 ## Last session did
 
-- **Step 7 shipped — mandated integration scene green.** First render that exercises the entire Slice C stack end-to-end through the Python authoring surface.
-  - **Filled the Python authoring gap** (the skipped doc-Step 5):
-    - `BezPath` object class in `objects/geometry.py` + verb builders `move_to`/`line_to`/`quad_to`/`cubic_to`/`close`.
-    - Five animation verbs in `animate/transforms.py`: `Rotate`, `ScaleTo`, `FadeIn`, `FadeOut`, `Colorize`. Each accepts `easing=` (default `Linear`). `Translate` also gained the `easing=` kwarg.
-    - All 15 easings re-exported as friendly aliases (`Smooth`, `Overshoot`, `ThereAndBack`, `NotQuiteThere`, …) from `manim_rs` top-level.
-    - `Scene.play` generalised from position-only to all 5 track kinds via a per-kind segment-bucket table; `.ir` emits whichever tracks have segments.
-  - **Integration scene** at `tests/python/integration_scene.py`: red square + green teardrop BezPath + blue triangle, each with ≥2 simultaneous tracks drawn from {position, opacity, rotation, scale, color}, using 4 different easings (Linear, Smooth, Overshoot, ThereAndBack, plus NotQuiteThere wrapping Smooth to exercise the recursive easing path). Both fill and stroke represented.
-  - **Test** at `tests/python/test_integration_scene.py` (3 tests):
-    - `ffprobe` metadata (width/height/fps/codec/pix_fmt/frame count).
-    - Pixel sum + nonzero count at frames 30 and 55, ±10% tolerance.
-    - Per-object centroid via color bands (red / green / blue), ±25 px tolerance — confirms each object animated to the expected screen position.
+- **Step 8 landed: consolidated ADR + porting notes + retrospective.**
+  - `docs/decisions/0004-slice-c-decisions.md` — five sub-decisions (pythonize FFI, `BezPath` primitive, all-tracks-all-easings, fill+MSAA pair, tolerance snapshots). Marked 0001 `superseded by 0004 §A`.
+  - `docs/porting-notes/rate-functions.md` — 15-easing table, f32 precision caveat, composition rules per track kind.
+  - `docs/porting-notes/fill.md` — `lyon::FillTessellator` + non-zero winding + MSAA-for-AA deltas vs manimgl's Loop-Blinn fill.
+  - `docs/porting-notes/scene-discovery.md` — `extract_scene.py` port (kept: class lookup; dropped: `--write-all`, interactive prompt, `compute_total_frames`).
+  - `docs/gotchas.md` — new entries for H.264/yuv420p chroma shift and MSAA resolve-target format/dim pairing; tolerance-snapshot rule appended to the existing platform-pinned entry.
+  - `docs/slices/slice-c.md §11` — retrospective filled (plan deltas, surprising calls, missed §6 gotchas, process observations, Slice D hand-off notes).
+- **Nine Slice C commits on branch `chcardoz/wellington`** (ahead of `origin/main` by 14 total including earlier scaffolding). Branch is unpushed.
 
-Totals: **Rust 53 passed / 0 failed** (unchanged), **Python 86 passed / 0 failed** (up from 83 — +3 integration tests).
-
-Visual check: rendered `/tmp/integration.mp4`, eyeballed f30 + f55 — all three objects visible with distinct colors, fill + stroke both rendering, animation state matches expected composition at both inspection points.
+Totals: **Rust 53 passed / 0 failed**, **Python 86 passed / 0 failed** (unchanged from Step 7).
 
 ## Next action
 
-**Slice C Step 8 — consolidated ADR + retrospective prep.**
+Open to whatever's next. Natural candidates:
 
-- Write `docs/decisions/0004-slice-c-decisions.md` (~10 lines per ADR-lite template) covering: pythonize FFI, BezPath unified primitive, all-tracks-all-easings, fill+MSAA pair, tolerance-based snapshots.
-- Update `docs/gotchas.md` with anything surfaced this slice (the H.264/yuv420p chroma-smear that needed tolerant color-band filters is a candidate).
-- Fill the Retrospective section in `docs/slices/slice-c.md` immediately after.
+- **Push + PR** `chcardoz/wellington` → `main`. 14 commits, clean working tree.
+- **Slice D kick-off.** Real Bézier stroke port (`manimlib/shaders/quadratic_bezier/stroke/*`) with per-vertex width + AA; snapshot cache. See `slice-c.md §10` for the natural sequence and §11's Slice D deltas.
+- **Cross-platform wheels** (parallel workstream, `slice-c.md §9`). Unblocked now that snapshots are tolerance-based.
 
 ## Blockers
 
@@ -35,9 +30,9 @@ None.
 
 ## Notes for next session
 
-- `integration_scene.py` lives in `tests/python/` because it's both a test fixture and documentation of the authoring API. If we grow more examples, consider a top-level `examples/` that tests can pull from.
-- H.264/yuv420p chroma subsampling visibly shifts solid-fill colors (e.g. `(0, 229, 51)` decodes as `(0, 240, 120)` ish). The centroid color-bands in `test_integration_scene.py` are tuned for that. If we ever offer a lossless-raw output, the bands should be tightened for that code path.
-- `Colorize` requires explicit `from_color` — the evaluator's color-track semantics are "last-write override" rather than "transition from current authored color." Worth revisiting if we want `Colorize(obj, to=...)` inferring `from_` from the object's authored color.
+- The single Slice C commit block passed pre-commit cleanly after four small fix-ups (ruff UP007, ruff B008×2, cargo fmt on IR + eval). All folded into their respective commits; no fixup commits.
+- `rate_functions.py` at `c5e23d9` — if the submodule advances and upstream adds easings, our enum drifts silently. Slice D planning should re-check.
+- The perf log (`docs/performance.md`) gained entries during this slice but was not acted on; it's a batch target for a future perf pass.
 
 ## Convention for updating this file
 

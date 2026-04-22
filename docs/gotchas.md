@@ -71,6 +71,14 @@ Slice B uses #1. Slice C should upgrade to #3 if per-frame submit count becomes 
 
 Regression test: `crates/manim-rs-raster/tests/multi_object.rs` renders two separated squares and asserts both show up. This test fails against the old single-submit code.
 
+### MSAA resolve target must match color target format + dimensions exactly
+
+`RenderPassDescriptor::color_attachments[0].resolve_target` must point to a texture with the **same format** as the multisampled color texture and the **same `width × height`**. A format mismatch (e.g. resolve `Rgba8Unorm` vs color `Rgba8UnormSrgb`) or a size mismatch panics inside wgpu with a message that doesn't immediately name the offending pair.
+
+Fix lives in: `crates/manim-rs-raster/src/lib.rs` — the `msaa_color_target` and `resolve_target` descriptors share `COLOR_FORMAT`, `width`, `height` by construction. Keep them paired; don't let one drift.
+
+Sample count is the other axis — the render pipeline's `multisample.count` must match the color attachment's `sample_count` (both `MSAA_SAMPLE_COUNT = 4`). `StrokePipeline::new` and `FillPipeline::new` both read the constant; new pipelines should too.
+
 ### 256-byte row alignment on readback
 
 wgpu requires `bytes_per_row` for buffer↔texture copies to be a multiple of 256. At 480×4 bpp, the natural row is 1920 B and you must pad to 2048 B. On the CPU readback path, strip the padding back out.
@@ -124,6 +132,16 @@ If you need to test that the *renderer* output survives, split the test: one hit
 ### Pixel-exact snapshot constants are platform-pinned
 
 `crates/manim-rs-raster/tests/snapshot.rs` pins an RGBA byte-sum and non-zero count for the canonical Slice B scene. Values are mac arm64 + Metal + wgpu 29. On a different backend (Vulkan on Linux, D3D12 on Windows) they will drift — that's expected, not a bug. Update under scrutiny: verify the *kind* of drift (all channels scaled uniformly vs. only some pixels changing) before bumping the constants.
+
+Slice C migrated these to tolerance-based checks (sum ± N, nonzero count ± N). Any new snapshot test must follow suit — do not re-introduce exact byte pins. ADR `0004 §E`.
+
+### H.264 / yuv420p chroma subsampling shifts solid fill colors
+
+Solid fill `(0, 229, 51)` (the integration scene's green teardrop) decodes back as approximately `(0, 240, 120)` after the libx264 + yuv420p round trip. Chroma subsampling is 2:2:0 so 2×2 pixel blocks share chroma, and gamut compression on the sRGB → BT.709 conversion nudges the hue. This is not a renderer bug.
+
+Per-object color-band tests (`tests/python/test_integration_scene.py`) tune their RGB tolerance accordingly — e.g. the green mask accepts G ≥ 150 with B up to 150. Tightening those bands without a lossless output path will produce spurious failures.
+
+If we ever expose a lossless-raw output (e.g. `ffv1` or raw RGBA mp4), add a separate test path with tight bands against that codec — don't try to tune one set of bounds to cover both.
 
 ### lyon dedupes sub-epsilon stroke points — circles can't force overflow
 

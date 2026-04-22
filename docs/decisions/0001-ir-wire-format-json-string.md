@@ -1,7 +1,7 @@
 # 0001 — IR wire format is a JSON string over the FFI for Slice B
 
 **Date:** 2026-04-21
-**Status:** accepted; revisit in Slice C
+**Status:** superseded by `0004-slice-c-decisions.md` §A
 
 ## Decision
 

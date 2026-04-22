@@ -251,4 +251,41 @@ Revisit after Slice C lands.
 
 ## 11. Retrospective — what the plan got wrong
 
-*To be filled in on ship, per Slice B §10 convention. Do not write until Slice C's success criteria are green.*
+Completed 2026-04-22. §5 success criteria green: Rust 53 passed / 0 failed, Python 86 passed / 0 failed, `integration_scene.py` renders to mp4 with per-object centroid checks, MSAA edges verifiably smooth, tolerance-based snapshot tests in place, ADR `0004-slice-c-decisions.md` + porting notes landed.
+
+### Plan got wrong
+
+- **CLI shape is `render MODULE SCENE OUT [opts]`, not `--scene FILE [CLASS]`.** Plan §1 wrote the flag form; what shipped is fully positional plus `--quality` / `-r` / `--duration` / `--fps` / `-o`. The positional form is what the tests and every authored scene actually use; the flag form would have added a redundant lever. Logged in `docs/porting-notes/scene-discovery.md`.
+- **`--write-all` and interactive stdin prompt did not ship.** Plan §3 Step 6 included both; we dropped them because no consumer (agentic or otherwise) needs them, and interactive prompts are hostile to pipelines. `SceneNotFoundError` carries an `available:` hint instead. Revisit if a consumer asks.
+- **Python authoring API (Step 5) filled in during Step 7, not before.** The plan's Step 5 → Step 7 ordering was right in principle, but the authoring API landed as the work to make Step 7 possible — `BezPath` object class, four new animation verbs, `Colorize`, and the `easing=` kwarg all went in under the "integration scene" commit. Not a bug; the single-object Step-4 tests were sufficient to validate the raster path without an authoring pass. Consequence: for Slice D, don't split "expose to Python" from "use from Python in a test" — collapse them.
+- **Effort bracket: Step 5 and Step 6 were under-estimated.** Plan said 4h / 3h optimistic. Reality: each was ~1d once the `easing=` kwarg and dispatch table across five track kinds was counted. Step 4 (MSAA + fill) came in on the optimistic end, which was the slice's loudest risk — the pre-solve list in §6 was load-bearing.
+- **Pinned commit SHA drift.** Plan §6 item 1 said "verify `pythonize` 0.23+ API before writing signatures." We pinned a commit SHA in porting-note headers; one (`rate-functions.md`) points at `c5e23d9`, same as Slice B's stroke note. If the submodule advances, the SHA citations are stable; if we start editing the manimgl submodule in-tree, they rot. Guard against that in Slice D.
+
+### Surprising calls that landed
+
+- **`FillUniforms = StrokeUniforms` type alias.** The two pipelines' uniform buffers are `{ mat4x4 mvp, vec4 color }`. Aliasing instead of duplicating is the smallest possible expression of "these are the same layout." Keep this posture — any time two WGSL structs are byte-compatible, alias rather than re-declare.
+- **Tolerance-based snapshots were the right call the first time.** ADR 0004 §E. MSAA broke the Slice B exact pins on the first render, as predicted in §6 item 8; migration was already authored, so there was nothing to rewrite. Pre-solving paid off.
+- **`BezPath` as the unified primitive immediately justified itself.** Five Python factories (`Circle`, `Rectangle`, `Line`, `Arc`, `Polygon`) land as <50 lines each; no IR schema churn. The "one IR variant per shape" trap was real and we dodged it.
+- **Per-object submit stayed.** Slice B §10 flagged this as a Slice D perf concern; Slice C's integration scene (3 objects, ~60 frames) produces ~180 submits per render and it's not visible. Note for the perf log, not a blocker.
+- **`Colorize` requires explicit `from_color`.** The color track's "last-write-override" semantics don't infer the starting color from the object. The explicit form matches the position track (explicit `delta`), and keeps the evaluator free of object-state reads. Would revisit if authoring friction surfaces in Slice E.
+
+### Gotchas §6 missed
+
+- **`pythonize` returns tuples for fixed-size arrays.** `[f32; 3]` → Python `tuple`, not `list`. Any test comparing against `[0.0, 0.0, 0.0]` fails on type, not value. Now in `docs/gotchas.md`; cost ~20 min before the first test panel pointed at it.
+- **f32 round-trip precision on parameterised easings.** `ThereAndBackWithPause(pause_ratio=1/3)` round-trips to a different f64 bit pattern; tests must use dyadic rationals. Now in `docs/gotchas.md`. Would have saved an hour chasing a "schema bug" that was a fixture bug.
+- **H.264/yuv420p chroma shift on solid fills.** `(0, 229, 51)` decodes as approximately `(0, 240, 120)`. Integration-scene color-band masks had to widen. Now in `docs/gotchas.md`. Per-object centroid was the right test shape — narrower per-pixel assertions would have chased ghosts.
+- **lyon dedupes sub-epsilon stroke points.** Caught during `GeometryOverflow` calibration; forced a zigzag fixture. Documented under the Slice C edge-cases test.
+
+### Process observations
+
+- **Single-commit per step held up.** Nine commits for nine concerns (IR, eval, raster fill+MSAA, raster tests, Python API, CLI, integration, perf log, docs). No mixed diffs, no "while I was in there" drift.
+- **Pre-commit hook caught four issues during the commit pass** (two ruff UP007 / B008, two cargo fmt). Each fix was local and obvious; hook-as-review worked.
+- **STATUS.md "rewrite don't append" continues to pay.** At no point during the slice did it grow past ~50 lines.
+- **The parallel workstream (§9, cross-platform wheels) did not start.** Not a gap — it was explicitly scoped out — but worth flagging that tolerance-based snapshots make it *possible* now, which is the point of §E.
+
+### Deltas for Slice D planning
+
+- Collapse "expose to Python" + "use in a test" into one step.
+- Keep `BezPath` verbs stable — Slice D's stroke port will add per-vertex attributes, not change the verb vocabulary.
+- `path_stroke.wgsl` will evolve significantly (Loop-Blinn, per-vertex width); `path_fill.wgsl` may stay trivial for another slice depending on where we land the fill AA story.
+- Slice D should re-check `rate_functions.py` at its pinned SHA — new easings have been added upstream in the past and we don't want to drift silently.
