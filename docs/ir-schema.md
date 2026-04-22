@@ -193,7 +193,7 @@ Every segment carries `t0: Time`, `t1: Time`, `from`, `to`, `easing: Easing`. Th
 | `Opacity` | `OpacitySegment` | `f32` | Multiplicative, default 1.0. |
 | `Rotation` | `RotationSegment` | `f32` (radians) | Matches manimgl / numpy convention. |
 | `Scale` | `ScaleSegment` | `f32` | Uniform scale; 1.0 is identity. Per-axis scale deferred. |
-| `Color` | `ColorSegment` | `RgbaSrgb` | **Override**, not tint. Active segment's value replaces the authored stroke/fill color on `SceneState.color_override`; last-active-wins across parallel color tracks. |
+| `Color` | `ColorSegment` | `RgbaSrgb` | **Override**, not tint. Active segment's value replaces the authored stroke/fill color on `SceneState.color_override`; across parallel color tracks, the one whose contributing segment has the latest `t0` wins (independent of track list order). |
 
 Segment rules (all tracks):
 

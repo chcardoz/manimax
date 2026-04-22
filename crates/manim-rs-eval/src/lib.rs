@@ -391,19 +391,34 @@ where
     out
 }
 
-/// Override semantics: the last track in declaration order with an active or
-/// held value at `t` wins. `None` ⇒ no override.
+/// Override semantics: among all parallel tracks with a contributing
+/// segment at `t` (active or held), the one whose contributing segment has
+/// the latest `t0` wins. Deterministic from timeline data alone — does not
+/// depend on list ordering of tracks. `None` ⇒ no override.
 fn latest_segments<S>(tracks: &[Vec<S>], t: Time) -> Option<S::V>
 where
     S: Segment<V = RgbaSrgb>,
 {
-    let mut out: Option<S::V> = None;
+    let mut best: Option<(Time, S::V)> = None;
     for segs in tracks {
-        if let Some(v) = evaluate_track(segs.as_slice(), t) {
-            out = Some(v);
+        let mut contributing: Option<(Time, S::V)> = None;
+        for seg in segs {
+            let (t0, t1) = (seg.t0(), seg.t1());
+            if t >= t0 && t <= t1 {
+                let alpha = segment_alpha(t0, t1, t);
+                let eased = apply_easing(seg.easing(), alpha);
+                contributing = Some((t0, Lerp::lerp(seg.from(), seg.to(), eased)));
+            } else if t1 < t {
+                contributing = Some((t0, seg.to()));
+            }
+        }
+        if let Some((t0, v)) = contributing {
+            if best.map_or(true, |(best_t0, _)| t0 >= best_t0) {
+                best = Some((t0, v));
+            }
         }
     }
-    out
+    best.map(|(_, v)| v)
 }
 
 // ---------------------------------------------------------------------------
@@ -901,9 +916,9 @@ mod tests {
 
     #[test]
     fn second_color_track_takes_over_override() {
-        // Two Color tracks on the same id: declaration order decides the
-        // winner (last declared wins). The first track is fully covered by
-        // the second's segment, so the second's value is what surfaces.
+        // Two Color tracks on the same id with identical timing (`t0` tie):
+        // ties break to the later-iterated track, so the second-declared
+        // track's value surfaces.
         let red: RgbaSrgb = [1.0, 0.0, 0.0, 1.0];
         let green: RgbaSrgb = [0.0, 1.0, 0.0, 1.0];
         let scene = one_object_scene(
@@ -932,6 +947,48 @@ mod tests {
             1.0,
         );
         assert_eq!(eval_at(&scene, 0.5).objects[0].color_override, Some(green));
+    }
+
+    #[test]
+    fn color_override_picks_latest_t0_not_list_order() {
+        // Track A is declared second but started earlier; Track B is declared
+        // first but its contributing segment starts later. The winner is
+        // decided by segment `t0`, not list order — so B (blue) wins at a
+        // time where both are held, even though A is later in the array.
+        let red: RgbaSrgb = [1.0, 0.0, 0.0, 1.0];
+        let blue: RgbaSrgb = [0.0, 0.0, 1.0, 1.0];
+        let scene = one_object_scene(
+            vec![
+                // Declared FIRST, but its segment starts LATER (t0=2.0).
+                Track::Color {
+                    id: 1,
+                    segments: vec![ColorSegment {
+                        t0: 2.0,
+                        t1: 3.0,
+                        from: blue,
+                        to: blue,
+                        easing: Easing::Linear {},
+                    }],
+                },
+                // Declared SECOND, but segment starts EARLIER (t0=0.0).
+                Track::Color {
+                    id: 1,
+                    segments: vec![ColorSegment {
+                        t0: 0.0,
+                        t1: 1.0,
+                        from: red,
+                        to: red,
+                        easing: Easing::Linear {},
+                    }],
+                },
+            ],
+            4.0,
+        );
+        // At t=2.5 both tracks contribute (red held from segment end, blue
+        // active). Latest-t0 wins → blue, regardless of list order.
+        assert_eq!(eval_at(&scene, 2.5).objects[0].color_override, Some(blue));
+        // At t=3.5 both tracks are held. Latest-t0 still wins → blue.
+        assert_eq!(eval_at(&scene, 3.5).objects[0].color_override, Some(blue));
     }
 
     #[test]
