@@ -29,9 +29,16 @@ def _canonical_scene() -> Scene:
 def test_eval_at_start() -> None:
     state = _rust.eval_at(ir.to_builtins(_canonical_scene().ir), 0.0)
     assert len(state["objects"]) == 1
-    assert state["objects"][0]["position"] == (0.0, 0.0, 0.0)
+    obj = state["objects"][0]
+    assert obj["position"] == (0.0, 0.0, 0.0)
     # Geometry passes through — the IR tag survives the round-trip.
-    assert state["objects"][0]["object"]["kind"] == "Polyline"
+    assert obj["object"]["kind"] == "Polyline"
+    # Slice C Step 3 added the track-derived state. With no Opacity / Rotation
+    # / Scale / Color tracks, defaults must surface untouched.
+    assert obj["opacity"] == 1.0
+    assert obj["rotation"] == 0.0
+    assert obj["scale"] == 1.0
+    assert obj["color_override"] is None
 
 
 def test_eval_at_midpoint() -> None:
