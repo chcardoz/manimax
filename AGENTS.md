@@ -17,19 +17,53 @@ ManimGL treats scene code as the renderer — to get frame 1000, you re-run the 
 
 ## Status
 
-**Greenfield.** This repo was just created. No code yet. The full architecture, stack decisions, research, and reasoning live in `docs/architecture.md`. Read that first.
+**Slice B shipped** (end-to-end: Python → IR → Rust eval → wgpu raster → ffmpeg mp4). The full architecture, stack decisions, research, and reasoning live in `docs/architecture.md`. Read that first, then `STATUS.md` for what's being worked on right now.
 
 ## Read before you touch anything
 
 1. `docs/architecture.md` — the dense context dump. Architecture, stack decisions, research summary, what was ruled out and why, what to build first.
 2. `docs/ir-schema.md` — (TODO) the IR specification. Source of truth for the Python↔Rust contract.
+3. `docs/decisions/` — numbered decision records (`NNNN-slug.md`, ADR-lite). Read these before changing anything a prior decision touched. **Write a new one** when you pick between credible alternatives (library X vs Y, schema shape, protocol, scope boundary) or make any choice a future agent might reasonably try to undo. Use the next unused number. ~10 lines: Decision / Why / Consequences / Rejected alternatives. Template in `docs/decisions/README.md`.
+4. `docs/slices/` — execution plans for each end-to-end vertical slice. Start with the latest active slice. Completed slices append a **Retrospective** section (what surprised us, what the plan got wrong) — read it before writing the next slice's plan. Each slice plan pins scope, work breakdown, success criteria, and explicit out-of-scope — the **what to build now**, as opposed to `architecture.md`'s **what the system is**.
+5. `docs/gotchas.md` — aggregator of non-obvious traps (API deltas, shell quirks, invariants that bite). Skim this before starting a session in an unfamiliar subsystem. Add an entry any time you lose >15 minutes to a trap not already listed.
+6. `STATUS.md` — current state of work in progress: active slice, what the last session did, next action, blockers. **Read this last** (it's the freshest) and **rewrite it at the end of every session** before handing back. Keep it under ~50 lines; anything larger probably belongs in a slice plan or porting note.
+
+## Dev commands
+
+The five commands a new agent needs within five minutes:
+
+```sh
+# Rebuild the pyo3 extension after Rust changes.
+source .venv/bin/activate && maturin develop
+
+# Rust tests (all crates in the workspace).
+# Exclude manim-rs-py: it's a pyo3 cdylib whose link step needs maturin's flags;
+# `cargo test` alone fails at link time.
+cargo test --workspace --exclude manim-rs-py
+
+# Python tests (pytest config in pyproject.toml).
+pytest tests/python
+
+# End-to-end smoke (Slice B — produces a viewable mp4).
+python -m manim_rs render /tmp/out.mp4 --duration 2 --fps 30
+
+# Verify an mp4 deterministically.
+ffprobe -v error -select_streams v:0 -count_frames \
+  -show_entries stream=width,height,avg_frame_rate,codec_name,pix_fmt,nb_read_frames \
+  -of default=noprint_wrappers=1 /tmp/out.mp4
+```
+
+**Gotcha:** when chaining `source .venv/bin/activate` with other commands via `;`, the activation may not resolve `.venv` from the repo root. Prefer either (a) activation as the first `&&`-chained command, or (b) an absolute path to `.venv/bin/activate`. See `docs/gotchas.md`.
+
+## Working rhythm
+
+For non-trivial slices, prefer **one step at a time**: explain the next step → user confirms → implement → update `STATUS.md` → repeat. Don't batch steps. This cadence is what shipped Slice B cleanly; batching tends to produce drift between the plan and the code and an outdated `STATUS.md`.
+
+Tasks vs `STATUS.md`: **tasks are for in-session tracking** (3+ steps inside one turn); **`STATUS.md` is the between-session handoff**. They don't duplicate. Close tasks inside the session; rewrite `STATUS.md` at the end before handing back.
 
 ## Quick pointers
 
-- **Language split:** Python for authoring (scene API), Rust for runtime (IR eval + wgpu rendering).
-- **Connection:** pyo3 extension module `manim_rs._rust`, built by maturin.
-- **Renderer:** wgpu 29, with lyon for 2D tessellation, cosmic-text for text, glam for 3D math. WGSL shaders in `crates/manim-rs-raster/shaders/`.
-- **Encoding:** subprocess ffmpeg.
+- **Language split:** Python authoring → IR → Rust runtime (eval + wgpu raster + ffmpeg encode). See `docs/architecture.md` §2–§5 for the full stack and version pins.
 - **Repo separation:** Manimax is independent of Divita. Divita consumes Manimax as a pip dependency.
 
 ## Reference code: ManimGL
