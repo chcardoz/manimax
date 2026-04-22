@@ -30,6 +30,20 @@ ManimGL treats scene code as the renderer — to get frame 1000, you re-run the 
 
 ## Dev commands
 
+### First-time setup
+
+Fresh clone or fresh Conductor worktree — run once before anything else:
+
+```sh
+./scripts/setup.sh
+```
+
+This initializes the `reference/manimgl` submodule, creates `.venv` via `uv`, installs the package with dev extras, and runs `maturin develop`. Idempotent. Cold `maturin develop` is 1–3 min.
+
+Conductor users: `conductor.json` points `scripts.setup` at this same script, so new worktrees bootstrap automatically. If you've populated Conductor's Repository Settings → Scripts UI for this repo, clear it — per Conductor docs, UI Scripts fully override `conductor.json`.
+
+### Day-to-day
+
 The five commands a new agent needs within five minutes:
 
 ```sh
