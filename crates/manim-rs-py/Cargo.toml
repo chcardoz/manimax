@@ -1,0 +1,20 @@
+[package]
+name = "manim-rs-py"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+repository.workspace = true
+
+[lib]
+name = "_rust"
+crate-type = ["cdylib"]
+
+[dependencies]
+manim-rs-ir = { workspace = true }
+manim-rs-runtime = { workspace = true }
+manim-rs-eval = { workspace = true }
+manim-rs-raster = { workspace = true }
+manim-rs-encode = { workspace = true }
+pyo3 = { workspace = true }
+serde_json = { workspace = true }
