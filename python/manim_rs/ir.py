@@ -43,6 +43,83 @@ class SceneMetadata(msgspec.Struct, forbid_unknown_fields=True, frozen=True):
 
 
 # ---------------------------------------------------------------------------
+# Stroke / Fill — shared paint descriptors. A geometry's `stroke` / `fill`
+# fields are `Optional`; wire format requires both fields and allows `null`.
+# ---------------------------------------------------------------------------
+
+
+class Stroke(msgspec.Struct, forbid_unknown_fields=True, frozen=True):
+    color: RgbaSrgb
+    width: float
+
+
+class Fill(msgspec.Struct, forbid_unknown_fields=True, frozen=True):
+    color: RgbaSrgb
+
+
+# ---------------------------------------------------------------------------
+# PathVerb — internally tagged union with discriminator "kind". Mirrors
+# the Rust `PathVerb` enum and SVG / lyon path events.
+# ---------------------------------------------------------------------------
+
+
+class MoveToVerb(
+    msgspec.Struct,
+    tag_field="kind",
+    tag="MoveTo",
+    forbid_unknown_fields=True,
+    frozen=True,
+):
+    to: Vec3
+
+
+class LineToVerb(
+    msgspec.Struct,
+    tag_field="kind",
+    tag="LineTo",
+    forbid_unknown_fields=True,
+    frozen=True,
+):
+    to: Vec3
+
+
+class QuadToVerb(
+    msgspec.Struct,
+    tag_field="kind",
+    tag="QuadTo",
+    forbid_unknown_fields=True,
+    frozen=True,
+):
+    ctrl: Vec3
+    to: Vec3
+
+
+class CubicToVerb(
+    msgspec.Struct,
+    tag_field="kind",
+    tag="CubicTo",
+    forbid_unknown_fields=True,
+    frozen=True,
+):
+    ctrl1: Vec3
+    ctrl2: Vec3
+    to: Vec3
+
+
+class CloseVerb(
+    msgspec.Struct,
+    tag_field="kind",
+    tag="Close",
+    forbid_unknown_fields=True,
+    frozen=True,
+):
+    pass
+
+
+PathVerb = MoveToVerb | LineToVerb | QuadToVerb | CubicToVerb | CloseVerb
+
+
+# ---------------------------------------------------------------------------
 # Object — internally tagged union with discriminator "kind".
 # ---------------------------------------------------------------------------
 
@@ -55,12 +132,24 @@ class Polyline(
     frozen=True,
 ):
     points: tuple[Vec3, ...]
-    stroke_color: RgbaSrgb
-    stroke_width: float
     closed: bool
+    stroke: Stroke | None
+    fill: Fill | None
 
 
-Object = Polyline  # union placeholder; grows in Slice C (Circle | BezPath | ...)
+class BezPath(
+    msgspec.Struct,
+    tag_field="kind",
+    tag="BezPath",
+    forbid_unknown_fields=True,
+    frozen=True,
+):
+    verbs: tuple[PathVerb, ...]
+    stroke: Stroke | None
+    fill: Fill | None
+
+
+Object = Polyline | BezPath
 
 
 # ---------------------------------------------------------------------------
@@ -95,7 +184,8 @@ TimelineOp = AddOp | RemoveOp
 
 
 # ---------------------------------------------------------------------------
-# Easing — internally tagged union with discriminator "kind".
+# Easing — internally tagged union with discriminator "kind". All 15 manimgl
+# rate functions. Two are recursive combinators wrapping an inner easing.
 # ---------------------------------------------------------------------------
 
 
@@ -109,11 +199,170 @@ class LinearEasing(
     pass
 
 
-Easing = LinearEasing  # grows in Slice C (Smooth | Rush | ...)
+class SmoothEasing(
+    msgspec.Struct,
+    tag_field="kind",
+    tag="Smooth",
+    forbid_unknown_fields=True,
+    frozen=True,
+):
+    pass
+
+
+class RushIntoEasing(
+    msgspec.Struct,
+    tag_field="kind",
+    tag="RushInto",
+    forbid_unknown_fields=True,
+    frozen=True,
+):
+    pass
+
+
+class RushFromEasing(
+    msgspec.Struct,
+    tag_field="kind",
+    tag="RushFrom",
+    forbid_unknown_fields=True,
+    frozen=True,
+):
+    pass
+
+
+class SlowIntoEasing(
+    msgspec.Struct,
+    tag_field="kind",
+    tag="SlowInto",
+    forbid_unknown_fields=True,
+    frozen=True,
+):
+    pass
+
+
+class DoubleSmoothEasing(
+    msgspec.Struct,
+    tag_field="kind",
+    tag="DoubleSmooth",
+    forbid_unknown_fields=True,
+    frozen=True,
+):
+    pass
+
+
+class ThereAndBackEasing(
+    msgspec.Struct,
+    tag_field="kind",
+    tag="ThereAndBack",
+    forbid_unknown_fields=True,
+    frozen=True,
+):
+    pass
+
+
+class LingeringEasing(
+    msgspec.Struct,
+    tag_field="kind",
+    tag="Lingering",
+    forbid_unknown_fields=True,
+    frozen=True,
+):
+    pass
+
+
+class ThereAndBackWithPauseEasing(
+    msgspec.Struct,
+    tag_field="kind",
+    tag="ThereAndBackWithPause",
+    forbid_unknown_fields=True,
+    frozen=True,
+):
+    pause_ratio: float
+
+
+class RunningStartEasing(
+    msgspec.Struct,
+    tag_field="kind",
+    tag="RunningStart",
+    forbid_unknown_fields=True,
+    frozen=True,
+):
+    pull_factor: float
+
+
+class OvershootEasing(
+    msgspec.Struct,
+    tag_field="kind",
+    tag="Overshoot",
+    forbid_unknown_fields=True,
+    frozen=True,
+):
+    pull_factor: float
+
+
+class WiggleEasing(
+    msgspec.Struct,
+    tag_field="kind",
+    tag="Wiggle",
+    forbid_unknown_fields=True,
+    frozen=True,
+):
+    wiggles: float
+
+
+class ExponentialDecayEasing(
+    msgspec.Struct,
+    tag_field="kind",
+    tag="ExponentialDecay",
+    forbid_unknown_fields=True,
+    frozen=True,
+):
+    half_life: float
+
+
+class NotQuiteThereEasing(
+    msgspec.Struct,
+    tag_field="kind",
+    tag="NotQuiteThere",
+    forbid_unknown_fields=True,
+    frozen=True,
+):
+    inner: Easing  # noqa: F821 — forward reference resolved below.
+    proportion: float
+
+
+class SquishRateFuncEasing(
+    msgspec.Struct,
+    tag_field="kind",
+    tag="SquishRateFunc",
+    forbid_unknown_fields=True,
+    frozen=True,
+):
+    inner: Easing  # noqa: F821
+    a: float
+    b: float
+
+
+Easing = (
+    LinearEasing
+    | SmoothEasing
+    | RushIntoEasing
+    | RushFromEasing
+    | SlowIntoEasing
+    | DoubleSmoothEasing
+    | ThereAndBackEasing
+    | LingeringEasing
+    | ThereAndBackWithPauseEasing
+    | RunningStartEasing
+    | OvershootEasing
+    | WiggleEasing
+    | ExponentialDecayEasing
+    | NotQuiteThereEasing
+    | SquishRateFuncEasing
+)
 
 
 # ---------------------------------------------------------------------------
-# Track — internally tagged union with discriminator "kind".
+# Track segments — one shape per value type. `t0/t1/easing` are common.
 # ---------------------------------------------------------------------------
 
 
@@ -123,6 +372,43 @@ class PositionSegment(msgspec.Struct, forbid_unknown_fields=True, frozen=True):
     from_: Vec3 = msgspec.field(name="from")  # `from` is a Python keyword
     to: Vec3
     easing: Easing
+
+
+class OpacitySegment(msgspec.Struct, forbid_unknown_fields=True, frozen=True):
+    t0: Time
+    t1: Time
+    from_: float = msgspec.field(name="from")
+    to: float
+    easing: Easing
+
+
+class RotationSegment(msgspec.Struct, forbid_unknown_fields=True, frozen=True):
+    t0: Time
+    t1: Time
+    from_: float = msgspec.field(name="from")  # radians
+    to: float
+    easing: Easing
+
+
+class ScaleSegment(msgspec.Struct, forbid_unknown_fields=True, frozen=True):
+    t0: Time
+    t1: Time
+    from_: float = msgspec.field(name="from")
+    to: float
+    easing: Easing
+
+
+class ColorSegment(msgspec.Struct, forbid_unknown_fields=True, frozen=True):
+    t0: Time
+    t1: Time
+    from_: RgbaSrgb = msgspec.field(name="from")
+    to: RgbaSrgb
+    easing: Easing
+
+
+# ---------------------------------------------------------------------------
+# Track — internally tagged union with discriminator "kind".
+# ---------------------------------------------------------------------------
 
 
 class PositionTrack(
@@ -136,7 +422,51 @@ class PositionTrack(
     segments: tuple[PositionSegment, ...]
 
 
-Track = PositionTrack  # grows in Slice C (Opacity | Color | ...)
+class OpacityTrack(
+    msgspec.Struct,
+    tag_field="kind",
+    tag="Opacity",
+    forbid_unknown_fields=True,
+    frozen=True,
+):
+    id: ObjectId
+    segments: tuple[OpacitySegment, ...]
+
+
+class RotationTrack(
+    msgspec.Struct,
+    tag_field="kind",
+    tag="Rotation",
+    forbid_unknown_fields=True,
+    frozen=True,
+):
+    id: ObjectId
+    segments: tuple[RotationSegment, ...]
+
+
+class ScaleTrack(
+    msgspec.Struct,
+    tag_field="kind",
+    tag="Scale",
+    forbid_unknown_fields=True,
+    frozen=True,
+):
+    id: ObjectId
+    segments: tuple[ScaleSegment, ...]
+
+
+class ColorTrack(
+    msgspec.Struct,
+    tag_field="kind",
+    tag="Color",
+    forbid_unknown_fields=True,
+    frozen=True,
+):
+    id: ObjectId
+    segments: tuple[ColorSegment, ...]
+
+
+Track = PositionTrack | OpacityTrack | RotationTrack | ScaleTrack | ColorTrack
 
 
 class Scene(msgspec.Struct, forbid_unknown_fields=True, frozen=True):

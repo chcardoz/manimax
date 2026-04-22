@@ -7,6 +7,11 @@
 //! two sides fails loudly at deserialize time rather than silently dropping
 //! fields. All enums are internally tagged because msgspec only supports that
 //! shape natively.
+//!
+//! Optionality note: `stroke`/`fill` on geometry are `Option<T>` because a
+//! shape can have either, both, or neither. On the wire they are required
+//! fields whose value may be `null`. This matches the "all fields required"
+//! principle while expressing absence cleanly.
 
 use serde::{Deserialize, Serialize};
 
@@ -34,14 +39,55 @@ pub struct SceneMetadata {
     pub background: RgbaSrgb,
 }
 
+// ---------------------------------------------------------------------------
+// Stroke / Fill — shared by every geometry variant.
+// ---------------------------------------------------------------------------
+
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct Stroke {
+    pub color: RgbaSrgb,
+    /// Scene units, not pixels. Camera is hardcoded at `[-8, 8] × [-4.5, 4.5]`.
+    pub width: f32,
+}
+
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct Fill {
+    pub color: RgbaSrgb,
+}
+
+// ---------------------------------------------------------------------------
+// Path verbs for BezPath geometry. Mirrors SVG / lyon `PathEvent`.
+// ---------------------------------------------------------------------------
+
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[serde(tag = "kind", deny_unknown_fields)]
+pub enum PathVerb {
+    MoveTo { to: Vec3 },
+    LineTo { to: Vec3 },
+    QuadTo { ctrl: Vec3, to: Vec3 },
+    CubicTo { ctrl1: Vec3, ctrl2: Vec3, to: Vec3 },
+    Close {},
+}
+
+// ---------------------------------------------------------------------------
+// Object — every geometry can be stroked, filled, or both (null ⇒ absent).
+// ---------------------------------------------------------------------------
+
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 #[serde(tag = "kind", deny_unknown_fields)]
 pub enum Object {
     Polyline {
         points: Vec<Vec3>,
-        stroke_color: RgbaSrgb,
-        stroke_width: f32,
         closed: bool,
+        stroke: Option<Stroke>,
+        fill: Option<Fill>,
+    },
+    BezPath {
+        verbs: Vec<PathVerb>,
+        stroke: Option<Stroke>,
+        fill: Option<Fill>,
     },
 }
 
@@ -59,14 +105,37 @@ pub enum TimelineOp {
     },
 }
 
+// ---------------------------------------------------------------------------
+// Easing. All 15 manimgl rate functions. Two are recursive combinators
+// (`NotQuiteThere`, `SquishRateFunc`) wrapping an inner easing.
+// ---------------------------------------------------------------------------
+
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 #[serde(tag = "kind", deny_unknown_fields)]
 pub enum Easing {
-    // Empty-struct variant (not unit) so `deny_unknown_fields` actually
+    // Empty-struct variants (not unit) so `deny_unknown_fields` actually
     // rejects extra fields. Serde's unit-variant handling under an internal
     // tag ignores extras silently. Wire format is identical.
     Linear {},
+    Smooth {},
+    RushInto {},
+    RushFrom {},
+    SlowInto {},
+    DoubleSmooth {},
+    ThereAndBack {},
+    Lingering {},
+    ThereAndBackWithPause { pause_ratio: f32 },
+    RunningStart { pull_factor: f32 },
+    Overshoot { pull_factor: f32 },
+    Wiggle { wiggles: f32 },
+    ExponentialDecay { half_life: f32 },
+    NotQuiteThere { inner: Box<Easing>, proportion: f32 },
+    SquishRateFunc { inner: Box<Easing>, a: f32, b: f32 },
 }
+
+// ---------------------------------------------------------------------------
+// Track segments — one shape per value type. `t0/t1/easing` are common.
+// ---------------------------------------------------------------------------
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
@@ -79,11 +148,69 @@ pub struct PositionSegment {
 }
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct OpacitySegment {
+    pub t0: Time,
+    pub t1: Time,
+    pub from: f32,
+    pub to: f32,
+    pub easing: Easing,
+}
+
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct RotationSegment {
+    pub t0: Time,
+    pub t1: Time,
+    /// Radians. Matches manimgl/numpy convention.
+    pub from: f32,
+    pub to: f32,
+    pub easing: Easing,
+}
+
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct ScaleSegment {
+    pub t0: Time,
+    pub t1: Time,
+    /// Uniform scale factor. `1.0` is identity. Per-axis scale deferred.
+    pub from: f32,
+    pub to: f32,
+    pub easing: Easing,
+}
+
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct ColorSegment {
+    pub t0: Time,
+    pub t1: Time,
+    pub from: RgbaSrgb,
+    pub to: RgbaSrgb,
+    pub easing: Easing,
+}
+
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 #[serde(tag = "kind", deny_unknown_fields)]
 pub enum Track {
     Position {
         id: ObjectId,
         segments: Vec<PositionSegment>,
+    },
+    Opacity {
+        id: ObjectId,
+        segments: Vec<OpacitySegment>,
+    },
+    Rotation {
+        id: ObjectId,
+        segments: Vec<RotationSegment>,
+    },
+    Scale {
+        id: ObjectId,
+        segments: Vec<ScaleSegment>,
+    },
+    Color {
+        id: ObjectId,
+        segments: Vec<ColorSegment>,
     },
 }
 
@@ -121,9 +248,12 @@ mod tests {
                         [1.0, 1.0, 0.0],
                         [-1.0, 1.0, 0.0],
                     ],
-                    stroke_color: [1.0, 1.0, 1.0, 1.0],
-                    stroke_width: 0.04,
                     closed: true,
+                    stroke: Some(Stroke {
+                        color: [1.0, 1.0, 1.0, 1.0],
+                        width: 0.04,
+                    }),
+                    fill: None,
                 },
             }],
             tracks: vec![Track::Position {
@@ -162,5 +292,151 @@ mod tests {
         let json = serde_json::to_string(&op).unwrap();
         assert!(json.contains(r#""op":"Remove""#), "got {json}");
         assert!(json.contains(r#""id":7"#));
+    }
+
+    #[test]
+    fn bezpath_roundtrips() {
+        let obj = Object::BezPath {
+            verbs: vec![
+                PathVerb::MoveTo {
+                    to: [0.0, 0.0, 0.0],
+                },
+                PathVerb::LineTo {
+                    to: [1.0, 0.0, 0.0],
+                },
+                PathVerb::QuadTo {
+                    ctrl: [1.0, 1.0, 0.0],
+                    to: [0.0, 1.0, 0.0],
+                },
+                PathVerb::CubicTo {
+                    ctrl1: [-1.0, 1.0, 0.0],
+                    ctrl2: [-1.0, 0.0, 0.0],
+                    to: [0.0, 0.0, 0.0],
+                },
+                PathVerb::Close {},
+            ],
+            stroke: Some(Stroke {
+                color: [0.0, 1.0, 0.0, 1.0],
+                width: 0.05,
+            }),
+            fill: Some(Fill {
+                color: [0.2, 0.2, 0.8, 0.5],
+            }),
+        };
+        let json = serde_json::to_string(&obj).unwrap();
+        let back: Object = serde_json::from_str(&json).unwrap();
+        assert_eq!(obj, back);
+    }
+
+    #[test]
+    fn recursive_easing_roundtrips() {
+        let e = Easing::SquishRateFunc {
+            inner: Box::new(Easing::NotQuiteThere {
+                inner: Box::new(Easing::Smooth {}),
+                proportion: 0.7,
+            }),
+            a: 0.2,
+            b: 0.8,
+        };
+        let json = serde_json::to_string(&e).unwrap();
+        let back: Easing = serde_json::from_str(&json).unwrap();
+        assert_eq!(e, back);
+    }
+
+    #[test]
+    fn every_easing_serializes_with_tag() {
+        let cases = [
+            Easing::Linear {},
+            Easing::Smooth {},
+            Easing::RushInto {},
+            Easing::RushFrom {},
+            Easing::SlowInto {},
+            Easing::DoubleSmooth {},
+            Easing::ThereAndBack {},
+            Easing::Lingering {},
+            Easing::ThereAndBackWithPause { pause_ratio: 0.33 },
+            Easing::RunningStart { pull_factor: -0.5 },
+            Easing::Overshoot { pull_factor: 1.5 },
+            Easing::Wiggle { wiggles: 2.0 },
+            Easing::ExponentialDecay { half_life: 0.1 },
+            Easing::NotQuiteThere {
+                inner: Box::new(Easing::Smooth {}),
+                proportion: 0.7,
+            },
+            Easing::SquishRateFunc {
+                inner: Box::new(Easing::Linear {}),
+                a: 0.4,
+                b: 0.6,
+            },
+        ];
+        assert_eq!(cases.len(), 15, "all 15 manimgl rate functions present");
+        for e in cases {
+            let json = serde_json::to_string(&e).unwrap();
+            assert!(json.contains(r#""kind""#), "missing tag in {json}");
+            let back: Easing = serde_json::from_str(&json).unwrap();
+            assert_eq!(e, back);
+        }
+    }
+
+    #[test]
+    fn every_track_variant_roundtrips() {
+        let common_easing = Easing::Linear {};
+        let cases = vec![
+            Track::Position {
+                id: 1,
+                segments: vec![PositionSegment {
+                    t0: 0.0,
+                    t1: 1.0,
+                    from: [0.0; 3],
+                    to: [1.0, 0.0, 0.0],
+                    easing: common_easing.clone(),
+                }],
+            },
+            Track::Opacity {
+                id: 1,
+                segments: vec![OpacitySegment {
+                    t0: 0.0,
+                    t1: 1.0,
+                    from: 0.0,
+                    to: 1.0,
+                    easing: common_easing.clone(),
+                }],
+            },
+            Track::Rotation {
+                id: 1,
+                segments: vec![RotationSegment {
+                    t0: 0.0,
+                    t1: 1.0,
+                    from: 0.0,
+                    to: std::f32::consts::PI,
+                    easing: common_easing.clone(),
+                }],
+            },
+            Track::Scale {
+                id: 1,
+                segments: vec![ScaleSegment {
+                    t0: 0.0,
+                    t1: 1.0,
+                    from: 1.0,
+                    to: 2.0,
+                    easing: common_easing.clone(),
+                }],
+            },
+            Track::Color {
+                id: 1,
+                segments: vec![ColorSegment {
+                    t0: 0.0,
+                    t1: 1.0,
+                    from: [1.0, 0.0, 0.0, 1.0],
+                    to: [0.0, 0.0, 1.0, 1.0],
+                    easing: common_easing,
+                }],
+            },
+        ];
+        for t in cases {
+            let json = serde_json::to_string(&t).unwrap();
+            let back: Track = serde_json::from_str(&json).unwrap();
+            assert_eq!(t, back);
+        }
     }
 }
