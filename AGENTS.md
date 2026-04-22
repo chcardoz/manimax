@@ -17,24 +17,79 @@ ManimGL treats scene code as the renderer — to get frame 1000, you re-run the 
 
 ## Status
 
-**Greenfield.** This repo was just created. No code yet. The full architecture, stack decisions, research, and reasoning live in `docs/architecture.md`. Read that first.
+**Slice B shipped** (end-to-end: Python → IR → Rust eval → wgpu raster → ffmpeg mp4). The full architecture, stack decisions, research, and reasoning live in `docs/architecture.md`. Read that first, then `STATUS.md` for what's being worked on right now.
 
 ## Read before you touch anything
 
 1. `docs/architecture.md` — the dense context dump. Architecture, stack decisions, research summary, what was ruled out and why, what to build first.
 2. `docs/ir-schema.md` — (TODO) the IR specification. Source of truth for the Python↔Rust contract.
+3. `docs/decisions/` — numbered decision records (`NNNN-slug.md`, ADR-lite). Read these before changing anything a prior decision touched. **Write a new one** when you pick between credible alternatives (library X vs Y, schema shape, protocol, scope boundary) or make any choice a future agent might reasonably try to undo. Use the next unused number. ~10 lines: Decision / Why / Consequences / Rejected alternatives. Template in `docs/decisions/README.md`.
+4. `docs/slices/` — execution plans for each end-to-end vertical slice. Start with the latest active slice. Completed slices append a **Retrospective** section (what surprised us, what the plan got wrong) — read it before writing the next slice's plan. Each slice plan pins scope, work breakdown, success criteria, and explicit out-of-scope — the **what to build now**, as opposed to `architecture.md`'s **what the system is**.
+5. `docs/gotchas.md` — aggregator of non-obvious traps (API deltas, shell quirks, invariants that bite). Skim this before starting a session in an unfamiliar subsystem. Add an entry any time you lose >15 minutes to a trap not already listed.
+6. `STATUS.md` — current state of work in progress: active slice, what the last session did, next action, blockers. **Read this last** (it's the freshest) and **rewrite it at the end of every session** before handing back. Keep it under ~50 lines; anything larger probably belongs in a slice plan or porting note.
+
+## Dev commands
+
+The five commands a new agent needs within five minutes:
+
+```sh
+# Rebuild the pyo3 extension after Rust changes.
+source .venv/bin/activate && maturin develop
+
+# Rust tests (all crates in the workspace).
+# Exclude manim-rs-py: it's a pyo3 cdylib whose link step needs maturin's flags;
+# `cargo test` alone fails at link time.
+cargo test --workspace --exclude manim-rs-py
+
+# Python tests (pytest config in pyproject.toml).
+pytest tests/python
+
+# End-to-end smoke (Slice B — produces a viewable mp4).
+python -m manim_rs render /tmp/out.mp4 --duration 2 --fps 30
+
+# Verify an mp4 deterministically.
+ffprobe -v error -select_streams v:0 -count_frames \
+  -show_entries stream=width,height,avg_frame_rate,codec_name,pix_fmt,nb_read_frames \
+  -of default=noprint_wrappers=1 /tmp/out.mp4
+```
+
+**Gotcha:** when chaining `source .venv/bin/activate` with other commands via `;`, the activation may not resolve `.venv` from the repo root. Prefer either (a) activation as the first `&&`-chained command, or (b) an absolute path to `.venv/bin/activate`. See `docs/gotchas.md`.
+
+## Working rhythm
+
+For non-trivial slices, prefer **one step at a time**: explain the next step → user confirms → implement → update `STATUS.md` → repeat. Don't batch steps. This cadence is what shipped Slice B cleanly; batching tends to produce drift between the plan and the code and an outdated `STATUS.md`.
+
+Tasks vs `STATUS.md`: **tasks are for in-session tracking** (3+ steps inside one turn); **`STATUS.md` is the between-session handoff**. They don't duplicate. Close tasks inside the session; rewrite `STATUS.md` at the end before handing back.
 
 ## Quick pointers
 
-- **Language split:** Python for authoring (scene API), Rust for runtime (IR eval + wgpu rendering).
-- **Connection:** pyo3 extension module `manim_rs._rust`, built by maturin.
-- **Renderer:** wgpu 29, with lyon for 2D tessellation, cosmic-text for text, glam for 3D math. WGSL shaders in `crates/manim-rs-raster/shaders/`.
-- **Encoding:** subprocess ffmpeg.
+- **Language split:** Python authoring → IR → Rust runtime (eval + wgpu raster + ffmpeg encode). See `docs/architecture.md` §2–§5 for the full stack and version pins.
 - **Repo separation:** Manimax is independent of Divita. Divita consumes Manimax as a pip dependency.
 
-## Reference repos to study when in doubt
+## Reference code: ManimGL
 
-- [pydantic-core](https://github.com/pydantic/pydantic-core) — closest prior art for "Python builds IR, Rust compiles it."
+ManimGL is pinned as a git submodule at `reference/manimgl/`. It is the primary reference for what Python authoring should feel like, and the source of truth for rendering/animation semantics we're porting. **Before inventing a new API or translating a rendering concept, read the manimgl equivalent first.** Do not guess at manimgl's behavior from memory.
+
+Contributors cloning fresh: `git clone --recurse-submodules`, or `git submodule update --init` after a normal clone.
+
+### Key subdirectories under `reference/manimgl/manimlib/`
+
+- `scene/` — `Scene.construct()`, lifecycle, frame/time stepping. The Python authoring loop we're replacing with IR emission.
+- `mobject/` — mobject hierarchy (VMobject, geometry, tex, text, 3D). Structural vocabulary the IR must express.
+- `animation/` — `Animation`, `Transform`, rate functions, composition. Maps to IR time-varying values.
+- `shaders/` — GLSL for VMobject rendering, stroke/fill. Reference when porting to WGSL in `crates/manim-rs-raster/shaders/`.
+- `camera/` — camera model, frame buffer, window/offline split. Informs the Rust runtime's render target abstraction.
+- `utils/` — bezier math, color, tex, SVG parsing. Most of this needs a Rust port.
+
+### Porting practices
+
+1. **Porting notes.** When you port a subsystem, drop a short `docs/porting-notes/<subsystem>.md` capturing invariants, API shape, and edge cases that aren't obvious from the manimgl source. 200–500 words. These compound — over time they become the primary reference and the submodule fades to a fallback.
+2. **Distinctive stub labels.** Use `PORT_STUB_MANIMGL_<subsystem>` (not `TODO`) for placeholder Rust waiting on a real port. Greppable, unambiguous.
+3. **Per-function attribution.** When porting a non-trivial algorithm, put a short header comment on the Rust function: manimgl source file + commit SHA + one-line note. Answers "which manimgl version does this match?" at the function level; also satisfies MIT attribution.
+4. **Literal-first translation.** First pass keeps manimgl's variable names and control flow even if it's ugly Rust. Only refactor to idiomatic Rust after it works. Eliminates "logic bug vs. porting bug" ambiguity.
+
+### Other prior art
+
+- [pydantic-core](https://github.com/pydantic/pydantic-core) — closest analog for "Python builds IR, Rust compiles it."
 - [rerun](https://github.com/rerun-io/rerun) — Python SDK + Rust runtime, Arrow-encoded messages.
 - [polars](https://github.com/pola-rs/polars) — maturin workspace layout at scale.
-- [3b1b/manim (ManimGL)](https://github.com/3b1b/manim) — cloned locally at `/Users/chcardoz/development/manimgl-ref/` for reference. Source of truth for what Python authoring should feel like.

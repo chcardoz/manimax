@@ -1,0 +1,3 @@
+[submodule "reference/manimgl"]
+	path = reference/manimgl
+	url = https://github.com/3b1b/manim.git

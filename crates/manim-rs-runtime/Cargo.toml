@@ -1,0 +1,14 @@
+[package]
+name = "manim-rs-runtime"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+repository.workspace = true
+
+[dependencies]
+manim-rs-ir = { workspace = true }
+manim-rs-eval = { workspace = true }
+manim-rs-raster = { workspace = true }
+manim-rs-encode = { workspace = true }
+thiserror = { workspace = true }

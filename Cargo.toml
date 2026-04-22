@@ -1,0 +1,56 @@
+[workspace]
+resolver = "3"
+members = [
+    "crates/manim-rs-ir",
+    "crates/manim-rs-eval",
+    "crates/manim-rs-raster",
+    "crates/manim-rs-encode",
+    "crates/manim-rs-runtime",
+    "crates/manim-rs-py",
+]
+
+[workspace.package]
+version = "0.0.0"
+edition = "2024"
+rust-version = "1.95"
+license = "MIT"
+repository = "https://github.com/chcardoz/manimax"
+
+[workspace.dependencies]
+# Internal crates
+manim-rs-ir = { path = "crates/manim-rs-ir" }
+manim-rs-eval = { path = "crates/manim-rs-eval" }
+manim-rs-raster = { path = "crates/manim-rs-raster" }
+manim-rs-encode = { path = "crates/manim-rs-encode" }
+manim-rs-runtime = { path = "crates/manim-rs-runtime" }
+
+# IR / serialization
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+
+# Rendering
+wgpu = "29"
+lyon = "1"
+glam = { version = "0.29", features = ["bytemuck"] }
+bytemuck = { version = "1", features = ["derive"] }
+
+# Python binding
+pyo3 = { version = "0.23", features = ["extension-module", "abi3-py310"] }
+
+# Error handling
+thiserror = "2"
+
+# Async runtime — Slice B's sequential pipeline blocks on wgpu's async APIs
+# without pulling in a full executor.
+pollster = "0.4"
+
+# PNG I/O for raster examples and eyeball tests.
+png = "0.17"
+
+[profile.release]
+lto = "thin"
+codegen-units = 1
+
+[profile.dev]
+# Speeds up iterative maturin develop cycles.
+opt-level = 1
