@@ -25,6 +25,8 @@ def _normalize_points(points: object) -> tuple[ir.Vec3, ...]:
         if isinstance(points, np.ndarray):
             if points.ndim != 2 or points.shape[1] != 3:
                 raise ValueError(f"Polyline points must have shape (N, 3), got {points.shape}")
+            if points.shape[0] < 2:
+                raise ValueError(f"Polyline needs at least 2 points, got {points.shape[0]}")
             return tuple((float(x), float(y), float(z)) for x, y, z in points)
     except ImportError:  # pragma: no cover — numpy is a declared dep
         pass
