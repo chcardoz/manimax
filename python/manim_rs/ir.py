@@ -14,14 +14,14 @@ import msgspec
 
 SCHEMA_VERSION: int = 1
 
-# ---------------------------------------------------------------------------
-# Scalars
+# ============================================================================
+# === Scalars ===
 #
 # Serialization representations chosen to match the Rust side:
 #   - Vec3 / RgbaSrgb serialize as JSON arrays (tuples work; lists would too).
 #   - Time is f64 seconds.
 #   - ObjectId is u32.
-# ---------------------------------------------------------------------------
+# ============================================================================
 
 Time = float
 ObjectId = int
@@ -42,10 +42,12 @@ class SceneMetadata(msgspec.Struct, forbid_unknown_fields=True, frozen=True):
     background: RgbaSrgb
 
 
-# ---------------------------------------------------------------------------
-# Stroke / Fill — shared paint descriptors. A geometry's `stroke` / `fill`
-# fields are `Optional`; wire format requires both fields and allows `null`.
-# ---------------------------------------------------------------------------
+# ============================================================================
+# === Stroke / Fill ===
+#
+# Shared paint descriptors. A geometry's `stroke` / `fill` fields are
+# `Optional`; wire format requires both fields and allows `null`.
+# ============================================================================
 
 
 class Stroke(msgspec.Struct, forbid_unknown_fields=True, frozen=True):
@@ -57,10 +59,12 @@ class Fill(msgspec.Struct, forbid_unknown_fields=True, frozen=True):
     color: RgbaSrgb
 
 
-# ---------------------------------------------------------------------------
-# PathVerb — internally tagged union with discriminator "kind". Mirrors
-# the Rust `PathVerb` enum and SVG / lyon path events.
-# ---------------------------------------------------------------------------
+# ============================================================================
+# === Path verbs ===
+#
+# Internally tagged union with discriminator "kind". Mirrors the Rust
+# `PathVerb` enum and SVG / lyon path events.
+# ============================================================================
 
 
 class MoveToVerb(
@@ -119,9 +123,11 @@ class CloseVerb(
 PathVerb = MoveToVerb | LineToVerb | QuadToVerb | CubicToVerb | CloseVerb
 
 
-# ---------------------------------------------------------------------------
-# Object — internally tagged union with discriminator "kind".
-# ---------------------------------------------------------------------------
+# ============================================================================
+# === Objects ===
+#
+# Internally tagged union with discriminator "kind".
+# ============================================================================
 
 
 class Polyline(
@@ -152,9 +158,11 @@ class BezPath(
 Object = Polyline | BezPath
 
 
-# ---------------------------------------------------------------------------
-# TimelineOp — internally tagged union with discriminator "op".
-# ---------------------------------------------------------------------------
+# ============================================================================
+# === Timeline ops ===
+#
+# Internally tagged union with discriminator "op".
+# ============================================================================
 
 
 class AddOp(
@@ -183,10 +191,12 @@ class RemoveOp(
 TimelineOp = AddOp | RemoveOp
 
 
-# ---------------------------------------------------------------------------
-# Easing — internally tagged union with discriminator "kind". All 15 manimgl
-# rate functions. Two are recursive combinators wrapping an inner easing.
-# ---------------------------------------------------------------------------
+# ============================================================================
+# === Easing ===
+#
+# Internally tagged union with discriminator "kind". All 15 manimgl rate
+# functions. Two are recursive combinators wrapping an inner easing.
+# ============================================================================
 
 
 class LinearEasing(
@@ -361,9 +371,11 @@ Easing = (
 )
 
 
-# ---------------------------------------------------------------------------
-# Track segments — one shape per value type. `t0/t1/easing` are common.
-# ---------------------------------------------------------------------------
+# ============================================================================
+# === Track segments ===
+#
+# One shape per value type. `t0 / t1 / easing` are common across all kinds.
+# ============================================================================
 
 
 class PositionSegment(msgspec.Struct, forbid_unknown_fields=True, frozen=True):
@@ -406,9 +418,11 @@ class ColorSegment(msgspec.Struct, forbid_unknown_fields=True, frozen=True):
     easing: Easing
 
 
-# ---------------------------------------------------------------------------
-# Track — internally tagged union with discriminator "kind".
-# ---------------------------------------------------------------------------
+# ============================================================================
+# === Tracks ===
+#
+# Internally tagged union with discriminator "kind".
+# ============================================================================
 
 
 class PositionTrack(
@@ -469,17 +483,24 @@ class ColorTrack(
 Track = PositionTrack | OpacityTrack | RotationTrack | ScaleTrack | ColorTrack
 
 
+# ============================================================================
+# === Scene ===
+# ============================================================================
+
+
 class Scene(msgspec.Struct, forbid_unknown_fields=True, frozen=True):
     metadata: SceneMetadata
     timeline: tuple[TimelineOp, ...]
     tracks: tuple[Track, ...]
 
 
-# ---------------------------------------------------------------------------
-# Codec helpers. Centralizing encode/decode here means callers do not need to
-# import msgspec directly, and we can swap encoders (msgspec.json → orjson →
-# pythonize) without touching call sites.
-# ---------------------------------------------------------------------------
+# ============================================================================
+# === Codec helpers ===
+#
+# Centralizing encode/decode here means callers do not need to import msgspec
+# directly, and we can swap encoders (msgspec.json → orjson → pythonize)
+# without touching call sites.
+# ============================================================================
 
 _encoder = msgspec.json.Encoder()
 _decoder = msgspec.json.Decoder(Scene)

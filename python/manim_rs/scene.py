@@ -20,15 +20,14 @@ _DEFAULT_BACKGROUND: ir.RgbaSrgb = (0.0, 0.0, 0.0, 1.0)
 
 AnyObject = Polyline | BezPath
 
-# Track-kind → (Segment class, Track class). The Scene maintains one
-# segment list per (object_id, track_kind) and merges lists into Tracks
-# at ``.ir`` time.
-_TRACK_KINDS: tuple[tuple[type, type], ...] = (
-    (ir.PositionSegment, ir.PositionTrack),
-    (ir.OpacitySegment, ir.OpacityTrack),
-    (ir.RotationSegment, ir.RotationTrack),
-    (ir.ScaleSegment, ir.ScaleTrack),
-    (ir.ColorSegment, ir.ColorTrack),
+# Track classes, in the order we emit them from ``.ir``. Iteration order drives
+# the output `Scene.tracks` ordering; used for deterministic serialization.
+_TRACK_CLASSES: tuple[type[ir.Track], ...] = (
+    ir.PositionTrack,
+    ir.OpacityTrack,
+    ir.RotationTrack,
+    ir.ScaleTrack,
+    ir.ColorTrack,
 )
 
 
@@ -59,10 +58,9 @@ class Scene:
         self._objects: dict[int, AnyObject] = {}
         self._active: set[int] = set()
         self._timeline: list[ir.TimelineOp] = []
-        # Segment buckets keyed by (track-kind-index, object-id). One bucket
-        # per value type per object — merged into a single ``Track`` by
-        # ``.ir`` using ``_TRACK_KINDS``.
-        self._segments: list[dict[int, list]] = [dict() for _ in _TRACK_KINDS]
+        # Segment buckets keyed by track class, then object id. Merged into a
+        # single ``Track`` per (class, id) by ``.ir``.
+        self._segments: dict[type[ir.Track], dict[int, list]] = {cls: {} for cls in _TRACK_CLASSES}
         self.fps: int = fps
         self.resolution: ir.Resolution = resolution
         self.background: ir.RgbaSrgb = background
@@ -119,15 +117,11 @@ class Scene:
         for anim in animations:
             longest = max(longest, anim.duration)
             for track in anim.emit(t_start):
-                bucket = self._bucket_for(track)
+                bucket = self._segments.get(type(track))
+                if bucket is None:
+                    raise TypeError(f"unhandled track kind: {type(track).__name__}")
                 bucket.setdefault(track.id, []).extend(track.segments)
         self._t = t_start + longest
-
-    def _bucket_for(self, track: ir.Track) -> dict[int, list]:
-        for idx, (_seg_cls, track_cls) in enumerate(_TRACK_KINDS):
-            if isinstance(track, track_cls):
-                return self._segments[idx]
-        raise TypeError(f"unhandled track kind: {type(track).__name__}")
 
     # ------------------------------------------------------------------
     # IR emission
@@ -136,9 +130,8 @@ class Scene:
     @property
     def ir(self) -> ir.Scene:
         tracks: list[ir.Track] = []
-        for idx, (_seg_cls, track_cls) in enumerate(_TRACK_KINDS):
-            bucket = self._segments[idx]
-            for oid, segs in sorted(bucket.items()):
+        for track_cls in _TRACK_CLASSES:
+            for oid, segs in sorted(self._segments[track_cls].items()):
                 if segs:
                     tracks.append(track_cls(id=oid, segments=tuple(segs)))
         return ir.Scene(
