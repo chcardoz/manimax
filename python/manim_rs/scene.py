@@ -58,9 +58,13 @@ class Scene:
         self._objects: dict[int, AnyObject] = {}
         self._active: set[int] = set()
         self._timeline: list[ir.TimelineOp] = []
-        # Segment buckets keyed by track class, then object id. Merged into a
-        # single ``Track`` per (class, id) by ``.ir``.
-        self._segments: dict[type[ir.Track], dict[int, list]] = {cls: {} for cls in _TRACK_CLASSES}
+        # One inner list per emitted track — parallel same-kind animations on
+        # the same object stay as separate tracks so the evaluator's N-ary
+        # composition (sum for Position/Rotation, product for Opacity/Scale)
+        # sees each contribution.
+        self._segments: dict[type[ir.Track], dict[int, list[list]]] = {
+            cls: {} for cls in _TRACK_CLASSES
+        }
         self.fps: int = fps
         self.resolution: ir.Resolution = resolution
         self.background: ir.RgbaSrgb = background
@@ -120,7 +124,7 @@ class Scene:
                 bucket = self._segments.get(type(track))
                 if bucket is None:
                     raise TypeError(f"unhandled track kind: {type(track).__name__}")
-                bucket.setdefault(track.id, []).extend(track.segments)
+                bucket.setdefault(track.id, []).append(list(track.segments))
         self._t = t_start + longest
 
     # ------------------------------------------------------------------
@@ -131,9 +135,10 @@ class Scene:
     def ir(self) -> ir.Scene:
         tracks: list[ir.Track] = []
         for track_cls in _TRACK_CLASSES:
-            for oid, segs in sorted(self._segments[track_cls].items()):
-                if segs:
-                    tracks.append(track_cls(id=oid, segments=tuple(segs)))
+            for oid, track_segs in sorted(self._segments[track_cls].items()):
+                for segs in track_segs:
+                    if segs:
+                        tracks.append(track_cls(id=oid, segments=tuple(segs)))
         return ir.Scene(
             metadata=ir.SceneMetadata(
                 schema_version=ir.SCHEMA_VERSION,

@@ -69,3 +69,34 @@ def test_eval_at_before_add_is_empty() -> None:
 def test_eval_at_rejects_bad_ir() -> None:
     with pytest.raises(ValueError, match="IR depythonize failed"):
         _rust.eval_at({"not": "a scene"}, 0.0)
+
+
+def test_parallel_same_kind_animations_compose() -> None:
+    """Two parallel Translates on one object must sum, not drop one.
+
+    Regression: the recorder used to flatten same-kind parallel animations
+    into a single track with overlapping segments; the evaluator returns on
+    the first match and silently dropped the second contribution.
+    """
+    scene = Scene(fps=30)
+    square = Polyline(
+        [(-1.0, -1.0, 0.0), (1.0, -1.0, 0.0), (1.0, 1.0, 0.0), (-1.0, 1.0, 0.0)],
+        stroke_width=0.08,
+    )
+    scene.add(square)
+    scene.play(
+        Translate(square, (3.0, 0.0, 0.0), duration=2.0),
+        Translate(square, (0.0, 4.0, 0.0), duration=2.0),
+    )
+
+    # Two tracks in the IR — not one with overlapping segments.
+    position_tracks = [t for t in scene.ir.tracks if isinstance(t, ir.PositionTrack)]
+    assert len(position_tracks) == 2
+
+    ir_dict = ir.to_builtins(scene.ir)
+    # Midpoint: each track contributes half its delta; sum is (1.5, 2.0, 0.0).
+    mid = _rust.eval_at(ir_dict, 1.0)["objects"][0]["position"]
+    assert mid == pytest.approx((1.5, 2.0, 0.0))
+    # Endpoint: full delta sum.
+    end = _rust.eval_at(ir_dict, 2.0)["objects"][0]["position"]
+    assert end == pytest.approx((3.0, 4.0, 0.0))
