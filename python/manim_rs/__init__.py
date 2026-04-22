@@ -1,9 +1,71 @@
 """Manimax — Python authoring frontend for the Rust runtime."""
 
 from manim_rs import _rust, ir
-from manim_rs.animate import Translate
-from manim_rs.objects import Polyline
+from manim_rs.animate import (
+    Colorize,
+    DoubleSmooth,
+    ExponentialDecay,
+    FadeIn,
+    FadeOut,
+    Linear,
+    Lingering,
+    NotQuiteThere,
+    Overshoot,
+    Rotate,
+    RunningStart,
+    RushFrom,
+    RushInto,
+    ScaleTo,
+    SlowInto,
+    Smooth,
+    SquishRateFunc,
+    ThereAndBack,
+    ThereAndBackWithPause,
+    Translate,
+    Wiggle,
+)
+from manim_rs.objects import (
+    BezPath,
+    Polyline,
+    close,
+    cubic_to,
+    line_to,
+    move_to,
+    quad_to,
+)
 from manim_rs.scene import Scene
 
-__all__ = ["Polyline", "Scene", "Translate", "_rust", "ir"]
+__all__ = [
+    "BezPath",
+    "Colorize",
+    "DoubleSmooth",
+    "ExponentialDecay",
+    "FadeIn",
+    "FadeOut",
+    "Linear",
+    "Lingering",
+    "NotQuiteThere",
+    "Overshoot",
+    "Polyline",
+    "Rotate",
+    "RunningStart",
+    "RushFrom",
+    "RushInto",
+    "ScaleTo",
+    "Scene",
+    "SlowInto",
+    "Smooth",
+    "SquishRateFunc",
+    "ThereAndBack",
+    "ThereAndBackWithPause",
+    "Translate",
+    "Wiggle",
+    "_rust",
+    "close",
+    "cubic_to",
+    "ir",
+    "line_to",
+    "move_to",
+    "quad_to",
+]
 __version__ = "0.0.0"
