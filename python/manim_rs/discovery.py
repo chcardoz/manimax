@@ -62,11 +62,23 @@ def _load_from_path(path: Path) -> ModuleType:
         raise ModuleLoadError(f"cannot build import spec for {path}")
     module = importlib.util.module_from_spec(spec)
     sys.modules[module_name] = module
+    # Let the scene file import sibling modules from its own directory, the
+    # way manimgl's extract_scene and pytest both do.
+    parent = str(resolved.parent)
+    added_to_path = parent not in sys.path
+    if added_to_path:
+        sys.path.insert(0, parent)
     try:
         spec.loader.exec_module(module)
     except Exception as err:
         sys.modules.pop(module_name, None)
         raise ModuleLoadError(f"failed to execute {path}: {err}") from err
+    finally:
+        if added_to_path:
+            try:
+                sys.path.remove(parent)
+            except ValueError:
+                pass
     return module
 
 
