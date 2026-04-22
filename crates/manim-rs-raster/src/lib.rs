@@ -18,7 +18,7 @@ pub mod pipelines;
 pub mod tessellator;
 
 pub use camera::Camera;
-pub use tessellator::{Mesh, Vertex};
+pub use tessellator::{FillMesh, Mesh, Vertex};
 
 use bytemuck::cast_slice;
 use glam::Mat4;
@@ -28,8 +28,7 @@ use manim_rs_ir::{Object, RgbaSrgb};
 use crate::pipelines::path_fill::{FillPipeline, FillUniforms};
 use crate::pipelines::path_stroke::{StrokePipeline, StrokeUniforms, UNIFORM_SIZE};
 use crate::tessellator::{
-    FillMesh, tessellate_bezpath, tessellate_bezpath_fill, tessellate_polyline,
-    tessellate_polyline_fill,
+    tessellate_bezpath, tessellate_bezpath_fill, tessellate_polyline, tessellate_polyline_fill,
 };
 
 const COPY_BYTES_PER_ROW_ALIGNMENT: u32 = 256;
@@ -66,6 +65,17 @@ pub enum RuntimeError {
     },
 }
 
+/// Per-pipeline GPU resources. Stroke and fill each have one of these; grouping
+/// them keeps `Runtime` readable and lets `upload_mesh` / `draw_mesh` take a
+/// single reference instead of four parallel field accesses.
+struct PipeBundle {
+    pipeline: wgpu::RenderPipeline,
+    vertex_buf: wgpu::Buffer,
+    index_buf: wgpu::Buffer,
+    uniform_buf: wgpu::Buffer,
+    bind_group: wgpu::BindGroup,
+}
+
 pub struct Runtime {
     device: wgpu::Device,
     queue: wgpu::Queue,
@@ -77,17 +87,8 @@ pub struct Runtime {
     height: u32,
     padded_bytes_per_row: u32,
 
-    stroke: StrokePipeline,
-    stroke_vertex_buf: wgpu::Buffer,
-    stroke_index_buf: wgpu::Buffer,
-    stroke_uniform_buf: wgpu::Buffer,
-    stroke_bind_group: wgpu::BindGroup,
-
-    fill: FillPipeline,
-    fill_vertex_buf: wgpu::Buffer,
-    fill_index_buf: wgpu::Buffer,
-    fill_uniform_buf: wgpu::Buffer,
-    fill_bind_group: wgpu::BindGroup,
+    stroke: PipeBundle,
+    fill: PipeBundle,
 }
 
 impl Runtime {
@@ -161,13 +162,21 @@ impl Runtime {
             mapped_at_creation: false,
         });
 
-        let stroke = StrokePipeline::new(&device, COLOR_FORMAT);
-        let (stroke_vertex_buf, stroke_index_buf, stroke_uniform_buf, stroke_bind_group) =
-            create_geometry_resources(&device, "stroke", &stroke.bind_group_layout);
+        let stroke_pipe = StrokePipeline::new(&device, COLOR_FORMAT);
+        let stroke = build_pipe_bundle(
+            &device,
+            "stroke",
+            stroke_pipe.pipeline,
+            &stroke_pipe.bind_group_layout,
+        );
 
-        let fill = FillPipeline::new(&device, COLOR_FORMAT);
-        let (fill_vertex_buf, fill_index_buf, fill_uniform_buf, fill_bind_group) =
-            create_geometry_resources(&device, "fill", &fill.bind_group_layout);
+        let fill_pipe = FillPipeline::new(&device, COLOR_FORMAT);
+        let fill = build_pipe_bundle(
+            &device,
+            "fill",
+            fill_pipe.pipeline,
+            &fill_pipe.bind_group_layout,
+        );
 
         Ok(Self {
             device,
@@ -180,15 +189,7 @@ impl Runtime {
             height,
             padded_bytes_per_row,
             stroke,
-            stroke_vertex_buf,
-            stroke_index_buf,
-            stroke_uniform_buf,
-            stroke_bind_group,
             fill,
-            fill_vertex_buf,
-            fill_index_buf,
-            fill_uniform_buf,
-            fill_bind_group,
         })
     }
 
@@ -248,7 +249,7 @@ impl Runtime {
             let scale = Mat4::from_scale(glam::Vec3::splat(obj.scale));
             let mvp = projection * translation * rotation * scale;
 
-            let (fill_mesh, fill_color, stroke_mesh, stroke_color) = match &obj.object {
+            let (fill_mesh, fill_color, stroke_mesh, stroke_color) = match &*obj.object {
                 Object::Polyline {
                     points,
                     closed,
@@ -305,33 +306,23 @@ impl Runtime {
 
             if let (Some(mesh), Some(color)) = (fill_mesh.as_ref(), final_fill_color) {
                 if !mesh.indices.is_empty() {
-                    let v_bytes: &[u8] = cast_slice(&mesh.vertices);
-                    let i_bytes: &[u8] = cast_slice(&mesh.indices);
-                    check_geometry_size(v_bytes.len() as u64, i_bytes.len() as u64)?;
-                    let uniforms = FillUniforms::new(mvp, color);
-                    self.queue.write_buffer(
-                        &self.fill_uniform_buf,
-                        0,
-                        bytemuck::bytes_of(&uniforms),
-                    );
-                    self.queue.write_buffer(&self.fill_vertex_buf, 0, v_bytes);
-                    self.queue.write_buffer(&self.fill_index_buf, 0, i_bytes);
+                    self.upload_mesh(
+                        &self.fill,
+                        cast_slice(&mesh.vertices),
+                        cast_slice(&mesh.indices),
+                        bytemuck::bytes_of(&FillUniforms::new(mvp, color)),
+                    )?;
                 }
             }
 
             if let (Some(mesh), Some(color)) = (stroke_mesh.as_ref(), final_stroke_color) {
                 if !mesh.indices.is_empty() {
-                    let v_bytes: &[u8] = cast_slice(&mesh.vertices);
-                    let i_bytes: &[u8] = cast_slice(&mesh.indices);
-                    check_geometry_size(v_bytes.len() as u64, i_bytes.len() as u64)?;
-                    let uniforms = StrokeUniforms::new(mvp, color);
-                    self.queue.write_buffer(
-                        &self.stroke_uniform_buf,
-                        0,
-                        bytemuck::bytes_of(&uniforms),
-                    );
-                    self.queue.write_buffer(&self.stroke_vertex_buf, 0, v_bytes);
-                    self.queue.write_buffer(&self.stroke_index_buf, 0, i_bytes);
+                    self.upload_mesh(
+                        &self.stroke,
+                        cast_slice(&mesh.vertices),
+                        cast_slice(&mesh.indices),
+                        bytemuck::bytes_of(&StrokeUniforms::new(mvp, color)),
+                    )?;
                 }
             }
 
@@ -367,30 +358,24 @@ impl Runtime {
 
                 if fill_drawable {
                     let mesh = fill_mesh.as_ref().unwrap();
-                    let v_bytes: &[u8] = cast_slice(&mesh.vertices);
-                    let i_bytes: &[u8] = cast_slice(&mesh.indices);
-                    pass.set_pipeline(&self.fill.pipeline);
-                    pass.set_bind_group(0, &self.fill_bind_group, &[]);
-                    pass.set_vertex_buffer(0, self.fill_vertex_buf.slice(..v_bytes.len() as u64));
-                    pass.set_index_buffer(
-                        self.fill_index_buf.slice(..i_bytes.len() as u64),
-                        wgpu::IndexFormat::Uint32,
+                    draw_mesh(
+                        &mut pass,
+                        &self.fill,
+                        cast_slice(&mesh.vertices),
+                        cast_slice(&mesh.indices),
+                        mesh.indices.len() as u32,
                     );
-                    pass.draw_indexed(0..mesh.indices.len() as u32, 0, 0..1);
                 }
 
                 if stroke_drawable {
                     let mesh = stroke_mesh.as_ref().unwrap();
-                    let v_bytes: &[u8] = cast_slice(&mesh.vertices);
-                    let i_bytes: &[u8] = cast_slice(&mesh.indices);
-                    pass.set_pipeline(&self.stroke.pipeline);
-                    pass.set_bind_group(0, &self.stroke_bind_group, &[]);
-                    pass.set_vertex_buffer(0, self.stroke_vertex_buf.slice(..v_bytes.len() as u64));
-                    pass.set_index_buffer(
-                        self.stroke_index_buf.slice(..i_bytes.len() as u64),
-                        wgpu::IndexFormat::Uint32,
+                    draw_mesh(
+                        &mut pass,
+                        &self.stroke,
+                        cast_slice(&mesh.vertices),
+                        cast_slice(&mesh.indices),
+                        mesh.indices.len() as u32,
                     );
-                    pass.draw_indexed(0..mesh.indices.len() as u32, 0, 0..1);
                 }
             }
 
@@ -462,6 +447,20 @@ impl Runtime {
         );
     }
 
+    fn upload_mesh(
+        &self,
+        bundle: &PipeBundle,
+        v_bytes: &[u8],
+        i_bytes: &[u8],
+        uniforms: &[u8],
+    ) -> Result<(), RuntimeError> {
+        check_geometry_size(v_bytes.len() as u64, i_bytes.len() as u64)?;
+        self.queue.write_buffer(&bundle.uniform_buf, 0, uniforms);
+        self.queue.write_buffer(&bundle.vertex_buf, 0, v_bytes);
+        self.queue.write_buffer(&bundle.index_buf, 0, i_bytes);
+        Ok(())
+    }
+
     fn readback_pixels(&self) -> Result<Vec<u8>, RuntimeError> {
         let slice = self.readback.slice(..);
         let (tx, rx) = std::sync::mpsc::channel();
@@ -491,11 +490,12 @@ impl Runtime {
     }
 }
 
-fn create_geometry_resources(
+fn build_pipe_bundle(
     device: &wgpu::Device,
     label_prefix: &str,
+    pipeline: wgpu::RenderPipeline,
     bind_group_layout: &wgpu::BindGroupLayout,
-) -> (wgpu::Buffer, wgpu::Buffer, wgpu::Buffer, wgpu::BindGroup) {
+) -> PipeBundle {
     let vertex_buf = device.create_buffer(&wgpu::BufferDescriptor {
         label: Some(&format!("{label_prefix} vertex buffer")),
         size: GEOMETRY_BUFFER_SIZE,
@@ -522,7 +522,30 @@ fn create_geometry_resources(
             resource: uniform_buf.as_entire_binding(),
         }],
     });
-    (vertex_buf, index_buf, uniform_buf, bind_group)
+    PipeBundle {
+        pipeline,
+        vertex_buf,
+        index_buf,
+        uniform_buf,
+        bind_group,
+    }
+}
+
+fn draw_mesh(
+    pass: &mut wgpu::RenderPass<'_>,
+    bundle: &PipeBundle,
+    v_bytes: &[u8],
+    i_bytes: &[u8],
+    index_count: u32,
+) {
+    pass.set_pipeline(&bundle.pipeline);
+    pass.set_bind_group(0, &bundle.bind_group, &[]);
+    pass.set_vertex_buffer(0, bundle.vertex_buf.slice(..v_bytes.len() as u64));
+    pass.set_index_buffer(
+        bundle.index_buf.slice(..i_bytes.len() as u64),
+        wgpu::IndexFormat::Uint32,
+    );
+    pass.draw_indexed(0..index_count, 0, 0..1);
 }
 
 fn modulate_color(base: RgbaSrgb, color_override: Option<RgbaSrgb>, opacity: f32) -> RgbaSrgb {
@@ -548,11 +571,6 @@ fn check_geometry_size(v_len: u64, i_len: u64) -> Result<(), RuntimeError> {
     }
     Ok(())
 }
-
-// Silence unused-import warnings — `FillMesh` is part of the public-ish API
-// surface for tests but only used here through the tessellator helpers.
-#[allow(dead_code)]
-type _FillMeshAlias = FillMesh;
 
 #[cfg(test)]
 mod tests {
