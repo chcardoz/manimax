@@ -1,0 +1,10 @@
+[package]
+name = "manim-rs-eval"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+repository.workspace = true
+
+[dependencies]
+manim-rs-ir = { workspace = true }
