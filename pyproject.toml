@@ -1,0 +1,40 @@
+[build-system]
+requires = ["maturin>=1.7,<2.0"]
+build-backend = "maturin"
+
+[project]
+name = "manim-rs"
+version = "0.0.0"
+description = "Manimax: Python authoring, Rust runtime, wgpu rendering."
+readme = "AGENTS.md"
+requires-python = ">=3.10"
+license = { text = "MIT" }
+authors = [{ name = "Chris Cardoza" }]
+dependencies = [
+    "msgspec>=0.18",
+    "numpy>=1.26",
+    "typer>=0.12",
+]
+
+[project.optional-dependencies]
+dev = [
+    "maturin>=1.7,<2.0",
+    "pytest>=8",
+    "ruff>=0.6",
+]
+
+[tool.maturin]
+manifest-path = "crates/manim-rs-py/Cargo.toml"
+module-name = "manim_rs._rust"
+python-source = "python"
+features = ["pyo3/extension-module"]
+
+[tool.ruff]
+line-length = 100
+target-version = "py310"
+
+[tool.ruff.lint]
+select = ["E", "F", "I", "UP", "B"]
+
+[tool.pytest.ini_options]
+testpaths = ["tests/python"]
