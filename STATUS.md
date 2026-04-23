@@ -1,38 +1,32 @@
 # Status
 
-**Last updated:** 2026-04-22
-**Current slice:** Post-Slice C cleanup / architecture follow-up.
+**Last updated:** 2026-04-23
+**Current slice:** Between slices — Slice C shipped, Slice D not yet planned.
 
 ## Last session did
 
-- Bundled per-pipeline GPU resources in the raster crate (commit `d4cf198`). Each
-  pipeline (fill, stroke) now owns a `PipeBundle` containing its pipeline,
-  vertex/index/uniform buffers, and bind group — replacing the earlier flat set
-  of parallel fields on `Runtime`. Keeps the per-object submit pattern
-  (`docs/gotchas.md` — `queue.write_buffer` ordering) intact; this is pure
-  organisational refactor, no behaviour change.
-- Verification green:
-  - `cargo test --workspace --exclude manim-rs-py`
-  - `source .venv/bin/activate && maturin develop && pytest tests/python`
+- Audited the post-Slice C cleanup backlog against the actual repo state and
+  found it already landed — porting notes (`transforms.md`, `geometry.md`),
+  `ir-schema.md` conventions sections, `performance.md` observations
+  (O3/O7/O12, N0/N1), gotchas (ffmpeg stderr draining, `allow_threads`
+  ordering, pythonize tuples), `Runtime::render` split + `needs_clear` rename,
+  `ir.py` section banners, and class-keyed `scene.py:_segments` are all in.
+  STATUS was stale — fixed.
 
-Preceding session (commit `5b8ab77`, still the basis of the current architecture):
+Still-load-bearing context from earlier sessions:
 
-- Evaluator-boundary cleanup: `TimelineOp::Add.object` is plain `Object` again;
-  `manim_rs_eval::Evaluator` compiles a `Scene` once (wraps timeline objects in
-  `Arc<Object>`, builds the track index) and evaluates frames cheaply via
-  `Evaluator::eval_at(t)`. Runtime and pyo3 hot paths use the compiled
-  evaluator once per render / eval call. ADR 0005 records the decision.
+- `d4cf198` — per-pipeline `PipeBundle` on `Runtime` (pipeline + buffers + bind
+  group bundled). Organisational; preserves `queue.write_buffer` ordering.
+- `5b8ab77` / ADR 0005 — plain IR + compiled `manim_rs_eval::Evaluator`.
+  `Evaluator::new(scene)` wraps timeline objects in `Arc`, builds the track
+  index once; frames evaluate cheaply via `Evaluator::eval_at(t)`.
 
 ## Next action
 
-- Docs-only cleanup pass (this session, in progress): stale STATUS, missing
-  porting notes for `transforms.py` / `geometry.py`, ir-schema coordinate +
-  alpha conventions, new performance observations, gotchas for ffmpeg stderr /
-  GIL / pythonize.
-- Code-legibility follow-ups to consider after docs: split `Runtime::render`
-  (170 lines, 3–4 levels of nesting); rename `first` → `needs_clear`; section
-  headers in `python/manim_rs/ir.py`; `scene.py:_segments` keyed by track
-  class directly.
+Plan Slice D. Starting point: `docs/slices/slice-c.md` §10 (stroke port from
+`manimlib/shaders/quadratic_bezier/stroke/` + snapshot cache keyed on IR hash)
+and §11 "Deltas for Slice D planning" (collapse expose-to-Python + use-in-test;
+keep `BezPath` verbs stable; re-check `rate_functions.py` at its pinned SHA).
 
 ## Blockers
 
