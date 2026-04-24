@@ -12,24 +12,20 @@ from pathlib import Path
 
 import numpy as np
 import pytest
+from conftest import canonical_square_scene
 from manim_rs import _rust, ir
-from manim_rs.animate.transforms import Translate
 from manim_rs.objects.geometry import Polyline
 from manim_rs.scene import Scene
 
 
 def _build_scene() -> Scene:
-    scene = Scene(
+    return canonical_square_scene(
         fps=15,
+        duration=0.4,
+        stroke_width=0.1,
+        translate_x=1.0,
         resolution=ir.Resolution(width=128, height=72),
     )
-    square = Polyline(
-        [(-1.0, -1.0, 0.0), (1.0, -1.0, 0.0), (1.0, 1.0, 0.0), (-1.0, 1.0, 0.0)],
-        stroke_width=0.1,
-    )
-    scene.add(square)
-    scene.play(Translate(square, (1.0, 0.0, 0.0), duration=0.4))
-    return scene
 
 
 @pytest.mark.skipif(shutil.which("ffprobe") is None, reason="ffprobe not on PATH")

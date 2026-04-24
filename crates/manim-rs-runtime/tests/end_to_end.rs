@@ -4,56 +4,15 @@
 use std::path::PathBuf;
 use std::process::Command;
 
-use manim_rs_ir::{
-    Easing, Object, PositionSegment, Resolution, SCHEMA_VERSION, Scene, SceneMetadata, Stroke,
-    TimelineOp, Track,
-};
 use manim_rs_runtime::render_to_mp4;
+
+mod common;
+use common::short_slice_b_scene;
 
 fn scene_path() -> PathBuf {
     let mut p = std::env::temp_dir();
     p.push("manim_rs_runtime_e2e.mp4");
     p
-}
-
-fn short_slice_b_scene(fps: u32, duration: f64) -> Scene {
-    Scene {
-        metadata: SceneMetadata {
-            schema_version: SCHEMA_VERSION,
-            fps,
-            duration,
-            resolution: Resolution {
-                width: 128,
-                height: 72,
-            },
-            background: [0.0, 0.0, 0.0, 1.0],
-        },
-        timeline: vec![TimelineOp::Add {
-            t: 0.0,
-            id: 1,
-            object: Object::Polyline {
-                points: vec![
-                    [-1.0, -1.0, 0.0],
-                    [1.0, -1.0, 0.0],
-                    [1.0, 1.0, 0.0],
-                    [-1.0, 1.0, 0.0],
-                ],
-                closed: true,
-                stroke: Some(Stroke::solid([1.0, 1.0, 1.0, 1.0], 0.1)),
-                fill: None,
-            },
-        }],
-        tracks: vec![Track::Position {
-            id: 1,
-            segments: vec![PositionSegment {
-                t0: 0.0,
-                t1: duration,
-                from: [0.0, 0.0, 0.0],
-                to: [1.0, 0.0, 0.0],
-                easing: Easing::Linear {},
-            }],
-        }],
-    }
 }
 
 #[test]
