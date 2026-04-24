@@ -5,28 +5,55 @@
 //! `Camera`, draws each object's fill and stroke through MSAA 4×, resolves
 //! to a single-sample target, and returns tight RGBA bytes.
 //!
+//! Pipeline (top-down view of one `render(state, camera, bg)` call):
+//!
+//! ```text
+//!   Runtime::render
+//!     ├─ for each ObjectState in state.objects:
+//!     │     tessellate_object        Object → ObjectDraw (fill mesh + stroke ribbon)
+//!     │     build_mvp                projection · translate · rotate · scale
+//!     │     render_one_object        upload_mesh → render pass → submit (per object)
+//!     │       └─ draw_mesh           bind pipeline + buffers, draw_indexed
+//!     ├─ copy_resolve_to_readback    MSAA resolve → padded readback buffer
+//!     └─ readback_pixels             map → strip 256-byte row padding → RGBA Vec<u8>
+//! ```
+//!
+//! Why one submit per object: `queue.write_buffer` is ordered before all
+//! submitted command buffers, so a single submit would clobber the shared
+//! vertex/index/uniform buffers — only the last object would survive.
+//!
 //! wgpu buffer-copy invariant: `bytes_per_row` must be a multiple of 256.
-//! `unpad_rows` strips the padding before returning (a 480-wide RGBA row
+//! `readback_pixels` strips the padding before returning (a 480-wide RGBA row
 //! is 1920 bytes, padded to 2048).
+//!
+//! Module map:
+//! - [`camera`] — orthographic camera, fixed for Slice B.
+//! - [`tessellator`] — path → quadratic stream + stroke ribbon expansion.
+//! - [`pipelines`] — wgpu pipeline objects for stroke and fill.
+//! - `render_object` (private) — per-object tessellation + paint resolution + MVP.
+//! - `pipe_bundle` (private) — per-pipeline GPU buffers and the bind group.
 
 pub mod camera;
 pub mod pipelines;
 pub mod tessellator;
 
+mod pipe_bundle;
+mod render_object;
+
 pub use camera::Camera;
 pub use tessellator::{QuadraticSegment, StrokeVertex, expand_stroke, sample_bezpath};
 
 use bytemuck::cast_slice;
-use glam::Mat4;
-use lyon::tessellation::VertexBuffers;
-use manim_rs_eval::{ObjectState, SceneState};
-use manim_rs_ir::{Object, RgbaSrgb, StrokeWidth};
+use manim_rs_eval::SceneState;
 
+use crate::pipe_bundle::{PipeBundle, build_pipe_bundle, draw_mesh};
 use crate::pipelines::path_fill::{FillPipeline, FillUniforms, UNIFORM_SIZE as FILL_UNIFORM_SIZE};
 use crate::pipelines::path_stroke::{
     StrokePipeline, StrokeUniforms, UNIFORM_SIZE as STROKE_UNIFORM_SIZE,
 };
-use crate::tessellator::{FillMesh, tessellate_bezpath_fill, tessellate_polyline_fill};
+use crate::render_object::{
+    ObjectDraw, build_mvp, check_geometry_size, clear_load, tessellate_object,
+};
 
 /// Fragment-shader AA fade width in pixels. Matches manimgl's
 /// `ANTI_ALIAS_WIDTH = 1.5`.
@@ -48,13 +75,15 @@ const STROKE_VERTEX_BUFFER_SIZE: u64 =
     MAX_VERTICES_PER_OBJECT * std::mem::size_of::<tessellator::StrokeVertex>() as u64;
 const FILL_VERTEX_BUFFER_SIZE: u64 =
     MAX_VERTICES_PER_OBJECT * std::mem::size_of::<pipelines::path_fill::FillVertex>() as u64;
-const INDEX_BUFFER_SIZE: u64 = MAX_INDICES_PER_OBJECT * std::mem::size_of::<u32>() as u64;
+pub(crate) const INDEX_BUFFER_SIZE: u64 =
+    MAX_INDICES_PER_OBJECT * std::mem::size_of::<u32>() as u64;
 
 fn align_up(v: u32, align: u32) -> u32 {
     let r = v % align;
     if r == 0 { v } else { v + align - r }
 }
 
+/// Anything wgpu init or per-frame rendering can fail with.
 #[derive(Debug, thiserror::Error)]
 pub enum RuntimeError {
     #[error("no wgpu adapter found (headless Metal init failed?)")]
@@ -73,31 +102,8 @@ pub enum RuntimeError {
     },
 }
 
-/// Per-pipeline GPU resources. Stroke and fill each have one of these; grouping
-/// them keeps `Runtime` readable and lets `upload_mesh` / `draw_mesh` take a
-/// single reference instead of four parallel field accesses.
-struct PipeBundle {
-    pipeline: wgpu::RenderPipeline,
-    vertex_buf: wgpu::Buffer,
-    vertex_buf_size: u64,
-    index_buf: wgpu::Buffer,
-    uniform_buf: wgpu::Buffer,
-    bind_group: wgpu::BindGroup,
-}
-
-/// Paints an `ObjectState` resolves into for one frame. Either side may be
-/// absent (no stroke / no fill, or zero-index mesh after tessellation).
-struct ObjectDraw {
-    fill: Option<(FillMesh, RgbaSrgb)>,
-    stroke: Option<VertexBuffers<StrokeVertex, u32>>,
-}
-
-impl ObjectDraw {
-    fn is_empty(&self) -> bool {
-        self.fill.is_none() && self.stroke.is_none()
-    }
-}
-
+/// Owns the wgpu device, MSAA + resolve targets, readback buffer, and the
+/// stroke/fill pipelines. Construct once, call [`Runtime::render`] per frame.
 pub struct Runtime {
     device: wgpu::Device,
     queue: wgpu::Queue,
@@ -114,6 +120,9 @@ pub struct Runtime {
 }
 
 impl Runtime {
+    /// Stand up the wgpu device and pipelines for a `width × height` target.
+    /// One-time cost is hundreds of milliseconds; reuse the same `Runtime`
+    /// across all frames of a render.
     pub fn new(width: u32, height: u32) -> Result<Self, RuntimeError> {
         assert!(width > 0 && height > 0, "runtime needs non-zero dimensions");
 
@@ -219,9 +228,11 @@ impl Runtime {
         })
     }
 
+    /// Render-target width in pixels, fixed at construction.
     pub fn width(&self) -> u32 {
         self.width
     }
+    /// Render-target height in pixels, fixed at construction.
     pub fn height(&self) -> u32 {
         self.height
     }
@@ -301,7 +312,7 @@ impl Runtime {
     fn render_one_object(
         &self,
         draw: &ObjectDraw,
-        mvp: Mat4,
+        mvp: glam::Mat4,
         pixel_size: f32,
         load: wgpu::LoadOp<wgpu::Color>,
     ) -> Result<(), RuntimeError> {
@@ -452,182 +463,6 @@ impl Runtime {
         self.readback.unmap();
         Ok(out)
     }
-}
-
-fn build_pipe_bundle(
-    device: &wgpu::Device,
-    label_prefix: &str,
-    pipeline: wgpu::RenderPipeline,
-    bind_group_layout: &wgpu::BindGroupLayout,
-    vertex_buf_size: u64,
-    uniform_size: u64,
-) -> PipeBundle {
-    let vertex_buf = device.create_buffer(&wgpu::BufferDescriptor {
-        label: Some(&format!("{label_prefix} vertex buffer")),
-        size: vertex_buf_size,
-        usage: wgpu::BufferUsages::VERTEX | wgpu::BufferUsages::COPY_DST,
-        mapped_at_creation: false,
-    });
-    let index_buf = device.create_buffer(&wgpu::BufferDescriptor {
-        label: Some(&format!("{label_prefix} index buffer")),
-        size: INDEX_BUFFER_SIZE,
-        usage: wgpu::BufferUsages::INDEX | wgpu::BufferUsages::COPY_DST,
-        mapped_at_creation: false,
-    });
-    let uniform_buf = device.create_buffer(&wgpu::BufferDescriptor {
-        label: Some(&format!("{label_prefix} uniform buffer")),
-        size: uniform_size,
-        usage: wgpu::BufferUsages::UNIFORM | wgpu::BufferUsages::COPY_DST,
-        mapped_at_creation: false,
-    });
-    let bind_group = device.create_bind_group(&wgpu::BindGroupDescriptor {
-        label: Some(&format!("{label_prefix} bind group")),
-        layout: bind_group_layout,
-        entries: &[wgpu::BindGroupEntry {
-            binding: 0,
-            resource: uniform_buf.as_entire_binding(),
-        }],
-    });
-    PipeBundle {
-        pipeline,
-        vertex_buf,
-        vertex_buf_size,
-        index_buf,
-        uniform_buf,
-        bind_group,
-    }
-}
-
-fn draw_mesh(pass: &mut wgpu::RenderPass<'_>, bundle: &PipeBundle, index_count: u32) {
-    pass.set_pipeline(&bundle.pipeline);
-    pass.set_bind_group(0, &bundle.bind_group, &[]);
-    pass.set_vertex_buffer(0, bundle.vertex_buf.slice(..));
-    pass.set_index_buffer(bundle.index_buf.slice(..), wgpu::IndexFormat::Uint32);
-    pass.draw_indexed(0..index_count, 0, 0..1);
-}
-
-fn build_mvp(projection: &Mat4, state: &ObjectState) -> Mat4 {
-    let translation = Mat4::from_translation(glam::Vec3::new(
-        state.position[0],
-        state.position[1],
-        state.position[2],
-    ));
-    let rotation = Mat4::from_rotation_z(state.rotation);
-    let scale = Mat4::from_scale(glam::Vec3::splat(state.scale));
-    *projection * translation * rotation * scale
-}
-
-fn clear_load(background: [f64; 4]) -> wgpu::LoadOp<wgpu::Color> {
-    wgpu::LoadOp::Clear(wgpu::Color {
-        r: background[0],
-        g: background[1],
-        b: background[2],
-        a: background[3],
-    })
-}
-
-/// Tessellate the object's geometry and resolve its paint colors. Returns
-/// an empty `ObjectDraw` (both sides `None`) if no paint produces drawable
-/// indices — the caller skips empty draws.
-fn tessellate_object(state: &ObjectState) -> ObjectDraw {
-    use tessellator::polyline_to_segments;
-
-    let (fill_raw, stroke_segments, stroke_info) = match &*state.object {
-        Object::Polyline {
-            points,
-            closed,
-            stroke,
-            fill,
-        } => (
-            fill.as_ref()
-                .map(|f| (tessellate_polyline_fill(points, *closed), f.color)),
-            stroke
-                .as_ref()
-                .map(|_| polyline_to_segments(points, *closed)),
-            stroke.as_ref(),
-        ),
-        Object::BezPath {
-            verbs,
-            stroke,
-            fill,
-        } => (
-            fill.as_ref()
-                .map(|f| (tessellate_bezpath_fill(verbs), f.color)),
-            stroke.as_ref().map(|_| sample_bezpath(verbs)),
-            stroke.as_ref(),
-        ),
-    };
-
-    let fill = fill_raw.and_then(|(mesh, color)| {
-        (!mesh.indices.is_empty()).then(|| {
-            (
-                mesh,
-                with_opacity(resolve_color(color, state.color_override), state.opacity),
-            )
-        })
-    });
-
-    let stroke = match (stroke_segments, stroke_info) {
-        (Some(segs), Some(stroke)) if !segs.is_empty() => {
-            let resolved = with_opacity(
-                resolve_color(stroke.color, state.color_override),
-                state.opacity,
-            );
-            let widths = resolve_stroke_widths(&stroke.width, segs.len());
-            let bufs = expand_stroke(&segs, &widths, resolved, stroke.joint);
-            (!bufs.indices.is_empty()).then_some(bufs)
-        }
-        _ => None,
-    };
-
-    ObjectDraw { fill, stroke }
-}
-
-/// Produce the widths slice `expand_stroke` expects. Scalar → length 1;
-/// per-vertex matching `segments+1` → pass-through; closed-polyline
-/// off-by-one (N points, N+1 endpoints after the closing edge) → pad by
-/// re-using `widths[0]`; any other mismatch falls back to the first width,
-/// so an IR-level invariant breach degrades to uniform width rather than
-/// panicking.
-fn resolve_stroke_widths(width: &StrokeWidth, segment_count: usize) -> Vec<f32> {
-    let expected = segment_count + 1;
-    match width {
-        StrokeWidth::Scalar(v) => vec![*v],
-        StrokeWidth::PerVertex(v) if v.len() == expected => v.clone(),
-        StrokeWidth::PerVertex(v) if v.len() + 1 == expected && !v.is_empty() => {
-            let mut w = v.clone();
-            w.push(v[0]);
-            w
-        }
-        StrokeWidth::PerVertex(v) => vec![v.first().copied().unwrap_or(0.0)],
-    }
-}
-
-fn resolve_color(base: RgbaSrgb, color_override: Option<RgbaSrgb>) -> RgbaSrgb {
-    color_override.unwrap_or(base)
-}
-
-fn with_opacity(mut color: RgbaSrgb, opacity: f32) -> RgbaSrgb {
-    color[3] *= opacity;
-    color
-}
-
-fn check_geometry_size(v_len: u64, i_len: u64, vertex_cap: u64) -> Result<(), RuntimeError> {
-    if v_len > vertex_cap {
-        return Err(RuntimeError::GeometryOverflow {
-            kind: "vertex",
-            needed: v_len,
-            cap: vertex_cap,
-        });
-    }
-    if i_len > INDEX_BUFFER_SIZE {
-        return Err(RuntimeError::GeometryOverflow {
-            kind: "index",
-            needed: i_len,
-            cap: INDEX_BUFFER_SIZE,
-        });
-    }
-    Ok(())
 }
 
 #[cfg(test)]
