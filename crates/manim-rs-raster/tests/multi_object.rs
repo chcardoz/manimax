@@ -26,10 +26,7 @@ fn square(cx: f32, cy: f32, half: f32) -> Object {
             [cx - half, cy + half, 0.0],
         ] as Vec<Vec3>,
         closed: true,
-        stroke: Some(Stroke {
-            color: [1.0, 1.0, 1.0, 1.0],
-            width: 0.15,
-        }),
+        stroke: Some(Stroke::solid([1.0, 1.0, 1.0, 1.0], 0.15)),
         fill: None,
     }
 }

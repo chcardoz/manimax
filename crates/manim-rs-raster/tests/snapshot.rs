@@ -50,10 +50,7 @@ fn canonical_scene_snapshot_pixel_checksum() {
                     pts
                 },
                 closed: true,
-                stroke: Some(Stroke {
-                    color: [1.0, 1.0, 1.0, 1.0],
-                    width: 0.1,
-                }),
+                stroke: Some(Stroke::solid([1.0, 1.0, 1.0, 1.0], 0.1)),
                 fill: None,
             },
             [0.0, 0.0, 0.0],

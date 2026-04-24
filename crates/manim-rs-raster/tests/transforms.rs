@@ -22,10 +22,7 @@ fn unit_square() -> Object {
     Object::Polyline {
         points: pts,
         closed: true,
-        stroke: Some(Stroke {
-            color: [1.0, 1.0, 1.0, 1.0],
-            width: 0.15,
-        }),
+        stroke: Some(Stroke::solid([1.0, 1.0, 1.0, 1.0], 0.15)),
         fill: None,
     }
 }

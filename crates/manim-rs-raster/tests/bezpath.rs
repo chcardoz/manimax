@@ -43,10 +43,7 @@ fn bezpath_stroke_renders() {
             1,
             Object::BezPath {
                 verbs: teardrop_verbs(),
-                stroke: Some(Stroke {
-                    color: [1.0, 1.0, 1.0, 1.0],
-                    width: 0.1,
-                }),
+                stroke: Some(Stroke::solid([1.0, 1.0, 1.0, 1.0], 0.1)),
                 fill: None,
             },
             [0.0, 0.0, 0.0],
@@ -114,10 +111,7 @@ fn bezpath_with_stroke_and_fill_draws_both() {
             1,
             Object::BezPath {
                 verbs: teardrop_verbs(),
-                stroke: Some(Stroke {
-                    color: [1.0, 1.0, 1.0, 1.0],
-                    width: 0.1,
-                }),
+                stroke: Some(Stroke::solid([1.0, 1.0, 1.0, 1.0], 0.1)),
                 fill: Some(Fill {
                     color: [0.0, 0.0, 1.0, 1.0],
                 }),
@@ -155,10 +149,7 @@ fn empty_bezpath_renders_nothing() {
             1,
             Object::BezPath {
                 verbs: vec![],
-                stroke: Some(Stroke {
-                    color: [1.0, 1.0, 1.0, 1.0],
-                    width: 0.1,
-                }),
+                stroke: Some(Stroke::solid([1.0, 1.0, 1.0, 1.0], 0.1)),
                 fill: Some(Fill {
                     color: [1.0, 1.0, 1.0, 1.0],
                 }),

@@ -1,23 +1,38 @@
 //! Fill pipeline — solid-color filled paths (Polyline interiors and BezPath
-//! interiors). Sibling to `path_stroke`; shares the same `Uniforms` layout but
-//! uses a position-only vertex (no `uv`) since we don't sample anything yet.
+//! interiors). Sibling to `path_stroke`; uses a position-only vertex since
+//! there is nothing to sample per-pixel.
 
 use bytemuck::{Pod, Zeroable};
+use glam::Mat4;
 
 use crate::MSAA_SAMPLE_COUNT;
-use crate::pipelines::path_stroke::{StrokeUniforms, UNIFORM_SIZE};
+use manim_rs_ir::RgbaSrgb;
 
-/// Fill mesh vertex — position only. Stroke vertices have an extra `uv`; the
-/// fill pipeline doesn't need it, so we keep a tighter layout.
+/// Fill mesh vertex — position only.
 #[repr(C)]
 #[derive(Copy, Clone, Debug, Pod, Zeroable)]
 pub struct FillVertex {
     pub position: [f32; 2],
 }
 
-/// Reuses `StrokeUniforms`: the layout `{ mat4x4 mvp, vec4 color }` is what
-/// both shaders read. Aliasing the type avoids two near-identical structs.
-pub type FillUniforms = StrokeUniforms;
+/// Fill uniform: `{ mat4x4 mvp, vec4 color }` — matches the fill WGSL.
+#[repr(C)]
+#[derive(Copy, Clone, Debug, Pod, Zeroable)]
+pub struct FillUniforms {
+    pub mvp: [[f32; 4]; 4],
+    pub color: [f32; 4],
+}
+
+impl FillUniforms {
+    pub fn new(mvp: Mat4, color: RgbaSrgb) -> Self {
+        Self {
+            mvp: mvp.to_cols_array_2d(),
+            color,
+        }
+    }
+}
+
+pub const UNIFORM_SIZE: u64 = std::mem::size_of::<FillUniforms>() as u64;
 
 pub struct FillPipeline {
     pub pipeline: wgpu::RenderPipeline,

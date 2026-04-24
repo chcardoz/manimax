@@ -26,10 +26,7 @@ fn diagonal_stroke_has_antialiased_edge_pixels() {
             Object::Polyline {
                 points: pts,
                 closed: false,
-                stroke: Some(Stroke {
-                    color: [1.0, 1.0, 1.0, 1.0],
-                    width: 0.05,
-                }),
+                stroke: Some(Stroke::solid([1.0, 1.0, 1.0, 1.0], 0.05)),
                 fill: None,
             },
             [0.0, 0.0, 0.0],

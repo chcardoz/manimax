@@ -48,6 +48,12 @@ pollster = "0.4"
 # PNG I/O for raster examples and eyeball tests.
 png = "0.17"
 
+# Hashing — blake3 for the render-side snapshot cache key.
+blake3 = "1"
+
+# Temp-file handling for atomic cache writes.
+tempfile = "3"
+
 [profile.release]
 lto = "thin"
 codegen-units = 1

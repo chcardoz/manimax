@@ -72,10 +72,7 @@ fn fill_plus_stroke_draws_both() {
             Object::Polyline {
                 points: square_points(),
                 closed: true,
-                stroke: Some(Stroke {
-                    color: [1.0, 1.0, 1.0, 1.0],
-                    width: 0.15,
-                }),
+                stroke: Some(Stroke::solid([1.0, 1.0, 1.0, 1.0], 0.15)),
                 fill: Some(Fill {
                     color: [1.0, 0.0, 0.0, 1.0],
                 }),

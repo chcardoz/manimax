@@ -39,10 +39,7 @@ fn short_slice_b_scene(fps: u32, duration: f64) -> Scene {
                     [-1.0, 1.0, 0.0],
                 ],
                 closed: true,
-                stroke: Some(Stroke {
-                    color: [1.0, 1.0, 1.0, 1.0],
-                    width: 0.1,
-                }),
+                stroke: Some(Stroke::solid([1.0, 1.0, 1.0, 1.0], 0.1)),
                 fill: None,
             },
         }],
