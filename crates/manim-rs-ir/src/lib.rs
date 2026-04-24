@@ -43,12 +43,60 @@ pub struct SceneMetadata {
 // Stroke / Fill — shared by every geometry variant.
 // ---------------------------------------------------------------------------
 
+/// Stroke width is either a single scalar (uniform across the stroke) or a
+/// per-vertex list. The wire format is untagged: a bare number or a JSON
+/// array. Both shapes round-trip cleanly through serde + msgspec.
+///
+/// Per-vertex length must equal `points.len()` for `Polyline` or
+/// `segment_count + 1` for `BezPath` (the per-segment endpoint count produced
+/// by `sample_bezpath`). The rasterizer falls back to the first element if
+/// the length check fails, so an IR-level invariant breach degrades to
+/// uniform-width rather than panicking.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[serde(untagged)]
+pub enum StrokeWidth {
+    Scalar(f32),
+    PerVertex(Vec<f32>),
+}
+
+impl From<f32> for StrokeWidth {
+    fn from(v: f32) -> Self {
+        Self::Scalar(v)
+    }
+}
+
+/// Joint strategy for corners between consecutive stroke segments. Serializes
+/// as a lowercase string (`"miter"` / `"bevel"` / `"auto"`).
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default, Serialize, Deserialize)]
+#[serde(rename_all = "lowercase")]
+pub enum JointKind {
+    Miter,
+    Bevel,
+    #[default]
+    Auto,
+}
+
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct Stroke {
     pub color: RgbaSrgb,
     /// Scene units, not pixels. Camera is hardcoded at `[-8, 8] × [-4.5, 4.5]`.
-    pub width: f32,
+    pub width: StrokeWidth,
+    /// Corner strategy. `Auto` matches manimgl's cosine threshold.
+    #[serde(default)]
+    pub joint: JointKind,
+}
+
+impl Stroke {
+    /// Convenience for call-sites that just want a uniform-width, auto-joint
+    /// stroke — keeps test fixtures terse.
+    pub fn solid(color: RgbaSrgb, width: f32) -> Self {
+        Self {
+            color,
+            width: StrokeWidth::Scalar(width),
+            joint: JointKind::Auto,
+        }
+    }
 }
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
@@ -249,10 +297,7 @@ mod tests {
                         [-1.0, 1.0, 0.0],
                     ],
                     closed: true,
-                    stroke: Some(Stroke {
-                        color: [1.0, 1.0, 1.0, 1.0],
-                        width: 0.04,
-                    }),
+                    stroke: Some(Stroke::solid([1.0, 1.0, 1.0, 1.0], 0.04)),
                     fill: None,
                 },
             }],
@@ -315,10 +360,7 @@ mod tests {
                 },
                 PathVerb::Close {},
             ],
-            stroke: Some(Stroke {
-                color: [0.0, 1.0, 0.0, 1.0],
-                width: 0.05,
-            }),
+            stroke: Some(Stroke::solid([0.0, 1.0, 0.0, 1.0], 0.05)),
             fill: Some(Fill {
                 color: [0.2, 0.2, 0.8, 0.5],
             }),
@@ -326,6 +368,36 @@ mod tests {
         let json = serde_json::to_string(&obj).unwrap();
         let back: Object = serde_json::from_str(&json).unwrap();
         assert_eq!(obj, back);
+    }
+
+    #[test]
+    fn stroke_width_scalar_serializes_as_number() {
+        let s = Stroke::solid([1.0, 1.0, 1.0, 1.0], 0.04);
+        let json = serde_json::to_string(&s).unwrap();
+        assert!(json.contains(r#""width":0.04"#), "got {json}");
+        let back: Stroke = serde_json::from_str(&json).unwrap();
+        assert_eq!(s, back);
+    }
+
+    #[test]
+    fn stroke_width_per_vertex_serializes_as_array() {
+        let s = Stroke {
+            color: [1.0, 0.0, 0.0, 1.0],
+            width: StrokeWidth::PerVertex(vec![0.02, 0.08, 0.02]),
+            joint: JointKind::Miter,
+        };
+        let json = serde_json::to_string(&s).unwrap();
+        assert!(json.contains(r#""width":[0.02,0.08,0.02]"#), "got {json}");
+        assert!(json.contains(r#""joint":"miter""#), "got {json}");
+        let back: Stroke = serde_json::from_str(&json).unwrap();
+        assert_eq!(s, back);
+    }
+
+    #[test]
+    fn stroke_joint_defaults_to_auto_when_absent() {
+        let json = r#"{"color":[1,1,1,1],"width":0.04}"#;
+        let s: Stroke = serde_json::from_str(json).unwrap();
+        assert_eq!(s.joint, JointKind::Auto);
     }
 
     #[test]

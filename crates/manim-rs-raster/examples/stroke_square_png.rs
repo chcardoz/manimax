@@ -29,10 +29,7 @@ fn main() {
             [-2.0, 2.0, 0.0],
         ],
         closed: true,
-        stroke: Some(Stroke {
-            color: [1.0, 1.0, 1.0, 1.0],
-            width: 0.08,
-        }),
+        stroke: Some(Stroke::solid([1.0, 1.0, 1.0, 1.0], 0.08)),
         fill: None,
     };
 

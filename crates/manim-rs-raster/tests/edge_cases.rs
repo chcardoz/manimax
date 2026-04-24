@@ -22,10 +22,7 @@ fn small_square(cx: f32, cy: f32, half: f32) -> Object {
             [cx - half, cy + half, 0.0],
         ] as Vec<Vec3>,
         closed: true,
-        stroke: Some(Stroke {
-            color: [1.0, 1.0, 1.0, 1.0],
-            width: 0.2,
-        }),
+        stroke: Some(Stroke::solid([1.0, 1.0, 1.0, 1.0], 0.2)),
         fill: None,
     }
 }
@@ -84,10 +81,7 @@ fn degenerate_polyline_is_skipped_siblings_still_render() {
             pts
         },
         closed: false,
-        stroke: Some(Stroke {
-            color: [1.0, 1.0, 1.0, 1.0],
-            width: 0.2,
-        }),
+        stroke: Some(Stroke::solid([1.0, 1.0, 1.0, 1.0], 0.2)),
         fill: None,
     };
 
@@ -144,10 +138,7 @@ fn oversized_polyline_returns_geometry_overflow() {
             Object::Polyline {
                 points,
                 closed: true,
-                stroke: Some(Stroke {
-                    color: [1.0, 1.0, 1.0, 1.0],
-                    width: 0.2,
-                }),
+                stroke: Some(Stroke::solid([1.0, 1.0, 1.0, 1.0], 0.2)),
                 fill: None,
             },
             [0.0, 0.0, 0.0],

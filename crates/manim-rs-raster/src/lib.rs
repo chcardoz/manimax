@@ -1,35 +1,36 @@
 //! Manimax rasterizer — wgpu device, MSAA-resolved offscreen render target,
 //! CPU readback, and stroke + fill pipelines.
 //!
-//! Slice C scope: a `Runtime` that owns one MSAA color texture (4×) and a
-//! single-sample resolve texture at a fixed resolution, one readback buffer,
-//! a stroke pipeline and a fill pipeline. `render` evaluates nothing — it
-//! takes a `SceneState` produced by `manim-rs-eval` plus a `Camera`, draws
-//! every object's fill (if any) and stroke (if any), resolves MSAA to the
-//! single-sample target, and returns tight RGBA bytes.
+//! `Runtime::render` takes a `SceneState` (from `manim-rs-eval`) plus a
+//! `Camera`, draws each object's fill and stroke through MSAA 4×, resolves
+//! to a single-sample target, and returns tight RGBA bytes.
 //!
-//! Pre-solved wgpu gotcha (see `docs/slices/slice-b.md` §6.1): buffer copies
-//! require `bytes_per_row` to be a multiple of 256. A 480-wide RGBA row is
-//! 1920 bytes, padded up to 2048. The helper `unpad_rows` strips the 128
-//! trailing bytes per row before returning.
+//! wgpu buffer-copy invariant: `bytes_per_row` must be a multiple of 256.
+//! `unpad_rows` strips the padding before returning (a 480-wide RGBA row
+//! is 1920 bytes, padded to 2048).
 
 pub mod camera;
 pub mod pipelines;
 pub mod tessellator;
 
 pub use camera::Camera;
-pub use tessellator::{FillMesh, Mesh, Vertex};
+pub use tessellator::{QuadraticSegment, StrokeVertex, expand_stroke, sample_bezpath};
 
 use bytemuck::cast_slice;
 use glam::Mat4;
+use lyon::tessellation::VertexBuffers;
 use manim_rs_eval::{ObjectState, SceneState};
-use manim_rs_ir::{Object, RgbaSrgb};
+use manim_rs_ir::{Object, RgbaSrgb, StrokeWidth};
 
-use crate::pipelines::path_fill::{FillPipeline, FillUniforms};
-use crate::pipelines::path_stroke::{StrokePipeline, StrokeUniforms, UNIFORM_SIZE};
-use crate::tessellator::{
-    tessellate_bezpath, tessellate_bezpath_fill, tessellate_polyline, tessellate_polyline_fill,
+use crate::pipelines::path_fill::{FillPipeline, FillUniforms, UNIFORM_SIZE as FILL_UNIFORM_SIZE};
+use crate::pipelines::path_stroke::{
+    StrokePipeline, StrokeUniforms, UNIFORM_SIZE as STROKE_UNIFORM_SIZE,
 };
+use crate::tessellator::{FillMesh, tessellate_bezpath_fill, tessellate_polyline_fill};
+
+/// Fragment-shader AA fade width in pixels. Matches manimgl's
+/// `ANTI_ALIAS_WIDTH = 1.5`.
+const ANTI_ALIAS_WIDTH: f32 = 1.5;
 
 const COPY_BYTES_PER_ROW_ALIGNMENT: u32 = 256;
 const COLOR_FORMAT: wgpu::TextureFormat = wgpu::TextureFormat::Rgba8UnormSrgb;
@@ -39,16 +40,14 @@ const COLOR_FORMAT: wgpu::TextureFormat = wgpu::TextureFormat::Rgba8UnormSrgb;
 pub const MSAA_SAMPLE_COUNT: u32 = 4;
 
 /// Per-object geometry caps. A single object's tessellated mesh must fit
-/// within both of these or `RuntimeError::GeometryOverflow` fires. Calibrated
-/// for Slice C; raise when real scenes push the ceiling.
+/// within both of these or `RuntimeError::GeometryOverflow` fires.
 const MAX_VERTICES_PER_OBJECT: u64 = 4096;
 const MAX_INDICES_PER_OBJECT: u64 = 16384;
 
-/// wgpu buffer sizes derived from the count caps. Vertex / index buffers are
-/// sized independently — `sizeof(Vertex)` changes (Slice D will add attrs)
-/// move the vertex-buffer size without touching the index side.
-const VERTEX_BUFFER_SIZE: u64 =
-    MAX_VERTICES_PER_OBJECT * std::mem::size_of::<tessellator::Vertex>() as u64;
+const STROKE_VERTEX_BUFFER_SIZE: u64 =
+    MAX_VERTICES_PER_OBJECT * std::mem::size_of::<tessellator::StrokeVertex>() as u64;
+const FILL_VERTEX_BUFFER_SIZE: u64 =
+    MAX_VERTICES_PER_OBJECT * std::mem::size_of::<pipelines::path_fill::FillVertex>() as u64;
 const INDEX_BUFFER_SIZE: u64 = MAX_INDICES_PER_OBJECT * std::mem::size_of::<u32>() as u64;
 
 fn align_up(v: u32, align: u32) -> u32 {
@@ -80,6 +79,7 @@ pub enum RuntimeError {
 struct PipeBundle {
     pipeline: wgpu::RenderPipeline,
     vertex_buf: wgpu::Buffer,
+    vertex_buf_size: u64,
     index_buf: wgpu::Buffer,
     uniform_buf: wgpu::Buffer,
     bind_group: wgpu::BindGroup,
@@ -89,7 +89,7 @@ struct PipeBundle {
 /// absent (no stroke / no fill, or zero-index mesh after tessellation).
 struct ObjectDraw {
     fill: Option<(FillMesh, RgbaSrgb)>,
-    stroke: Option<(Mesh, RgbaSrgb)>,
+    stroke: Option<VertexBuffers<StrokeVertex, u32>>,
 }
 
 impl ObjectDraw {
@@ -190,6 +190,8 @@ impl Runtime {
             "stroke",
             stroke_pipe.pipeline,
             &stroke_pipe.bind_group_layout,
+            STROKE_VERTEX_BUFFER_SIZE,
+            STROKE_UNIFORM_SIZE,
         );
 
         let fill_pipe = FillPipeline::new(&device, COLOR_FORMAT);
@@ -198,6 +200,8 @@ impl Runtime {
             "fill",
             fill_pipe.pipeline,
             &fill_pipe.bind_group_layout,
+            FILL_VERTEX_BUFFER_SIZE,
+            FILL_UNIFORM_SIZE,
         );
 
         Ok(Self {
@@ -256,6 +260,9 @@ impl Runtime {
         background: [f64; 4],
     ) -> Result<Vec<u8>, RuntimeError> {
         let projection = camera.projection();
+        // Orthographic pixel size in scene units. The stroke fragment shader
+        // needs this to convert ribbon-space `uv.y` into pixel distance for AA.
+        let pixel_size = (camera.right - camera.left) / self.width as f32;
 
         // The first drawn object clears the background; subsequent ones load.
         let mut needs_clear = true;
@@ -272,7 +279,7 @@ impl Runtime {
             } else {
                 wgpu::LoadOp::Load
             };
-            self.render_one_object(&draw, mvp, load)?;
+            self.render_one_object(&draw, mvp, pixel_size, load)?;
         }
 
         let mut tail_encoder =
@@ -295,6 +302,7 @@ impl Runtime {
         &self,
         draw: &ObjectDraw,
         mvp: Mat4,
+        pixel_size: f32,
         load: wgpu::LoadOp<wgpu::Color>,
     ) -> Result<(), RuntimeError> {
         let mut encoder = self
@@ -311,12 +319,12 @@ impl Runtime {
                 bytemuck::bytes_of(&FillUniforms::new(mvp, *color)),
             )?;
         }
-        if let Some((mesh, color)) = &draw.stroke {
+        if let Some(buffers) = &draw.stroke {
             self.upload_mesh(
                 &self.stroke,
-                cast_slice(&mesh.vertices),
-                cast_slice(&mesh.indices),
-                bytemuck::bytes_of(&StrokeUniforms::new(mvp, *color)),
+                cast_slice(&buffers.vertices),
+                cast_slice(&buffers.indices),
+                bytemuck::bytes_of(&StrokeUniforms::new(mvp, ANTI_ALIAS_WIDTH, pixel_size)),
             )?;
         }
 
@@ -341,8 +349,8 @@ impl Runtime {
             if let Some((mesh, _)) = &draw.fill {
                 draw_mesh(&mut pass, &self.fill, mesh.indices.len() as u32);
             }
-            if let Some((mesh, _)) = &draw.stroke {
-                draw_mesh(&mut pass, &self.stroke, mesh.indices.len() as u32);
+            if let Some(buffers) = &draw.stroke {
+                draw_mesh(&mut pass, &self.stroke, buffers.indices.len() as u32);
             }
         }
 
@@ -406,7 +414,11 @@ impl Runtime {
         i_bytes: &[u8],
         uniforms: &[u8],
     ) -> Result<(), RuntimeError> {
-        check_geometry_size(v_bytes.len() as u64, i_bytes.len() as u64)?;
+        check_geometry_size(
+            v_bytes.len() as u64,
+            i_bytes.len() as u64,
+            bundle.vertex_buf_size,
+        )?;
         self.queue.write_buffer(&bundle.uniform_buf, 0, uniforms);
         self.queue.write_buffer(&bundle.vertex_buf, 0, v_bytes);
         self.queue.write_buffer(&bundle.index_buf, 0, i_bytes);
@@ -447,10 +459,12 @@ fn build_pipe_bundle(
     label_prefix: &str,
     pipeline: wgpu::RenderPipeline,
     bind_group_layout: &wgpu::BindGroupLayout,
+    vertex_buf_size: u64,
+    uniform_size: u64,
 ) -> PipeBundle {
     let vertex_buf = device.create_buffer(&wgpu::BufferDescriptor {
         label: Some(&format!("{label_prefix} vertex buffer")),
-        size: VERTEX_BUFFER_SIZE,
+        size: vertex_buf_size,
         usage: wgpu::BufferUsages::VERTEX | wgpu::BufferUsages::COPY_DST,
         mapped_at_creation: false,
     });
@@ -462,7 +476,7 @@ fn build_pipe_bundle(
     });
     let uniform_buf = device.create_buffer(&wgpu::BufferDescriptor {
         label: Some(&format!("{label_prefix} uniform buffer")),
-        size: UNIFORM_SIZE,
+        size: uniform_size,
         usage: wgpu::BufferUsages::UNIFORM | wgpu::BufferUsages::COPY_DST,
         mapped_at_creation: false,
     });
@@ -477,6 +491,7 @@ fn build_pipe_bundle(
     PipeBundle {
         pipeline,
         vertex_buf,
+        vertex_buf_size,
         index_buf,
         uniform_buf,
         bind_group,
@@ -515,7 +530,9 @@ fn clear_load(background: [f64; 4]) -> wgpu::LoadOp<wgpu::Color> {
 /// an empty `ObjectDraw` (both sides `None`) if no paint produces drawable
 /// indices — the caller skips empty draws.
 fn tessellate_object(state: &ObjectState) -> ObjectDraw {
-    let (fill_raw, stroke_raw) = match &*state.object {
+    use tessellator::polyline_to_segments;
+
+    let (fill_raw, stroke_segments, stroke_info) = match &*state.object {
         Object::Polyline {
             points,
             closed,
@@ -526,7 +543,8 @@ fn tessellate_object(state: &ObjectState) -> ObjectDraw {
                 .map(|f| (tessellate_polyline_fill(points, *closed), f.color)),
             stroke
                 .as_ref()
-                .map(|s| (tessellate_polyline(points, s.width, *closed), s.color)),
+                .map(|_| polyline_to_segments(points, *closed)),
+            stroke.as_ref(),
         ),
         Object::BezPath {
             verbs,
@@ -535,9 +553,8 @@ fn tessellate_object(state: &ObjectState) -> ObjectDraw {
         } => (
             fill.as_ref()
                 .map(|f| (tessellate_bezpath_fill(verbs), f.color)),
-            stroke
-                .as_ref()
-                .map(|s| (tessellate_bezpath(verbs, s.width), s.color)),
+            stroke.as_ref().map(|_| sample_bezpath(verbs)),
+            stroke.as_ref(),
         ),
     };
 
@@ -549,15 +566,41 @@ fn tessellate_object(state: &ObjectState) -> ObjectDraw {
             )
         })
     });
-    let stroke = stroke_raw.and_then(|(mesh, color)| {
-        (!mesh.indices.is_empty()).then(|| {
-            (
-                mesh,
-                with_opacity(resolve_color(color, state.color_override), state.opacity),
-            )
-        })
-    });
+
+    let stroke = match (stroke_segments, stroke_info) {
+        (Some(segs), Some(stroke)) if !segs.is_empty() => {
+            let resolved = with_opacity(
+                resolve_color(stroke.color, state.color_override),
+                state.opacity,
+            );
+            let widths = resolve_stroke_widths(&stroke.width, segs.len());
+            let bufs = expand_stroke(&segs, &widths, resolved, stroke.joint);
+            (!bufs.indices.is_empty()).then_some(bufs)
+        }
+        _ => None,
+    };
+
     ObjectDraw { fill, stroke }
+}
+
+/// Produce the widths slice `expand_stroke` expects. Scalar → length 1;
+/// per-vertex matching `segments+1` → pass-through; closed-polyline
+/// off-by-one (N points, N+1 endpoints after the closing edge) → pad by
+/// re-using `widths[0]`; any other mismatch falls back to the first width,
+/// so an IR-level invariant breach degrades to uniform width rather than
+/// panicking.
+fn resolve_stroke_widths(width: &StrokeWidth, segment_count: usize) -> Vec<f32> {
+    let expected = segment_count + 1;
+    match width {
+        StrokeWidth::Scalar(v) => vec![*v],
+        StrokeWidth::PerVertex(v) if v.len() == expected => v.clone(),
+        StrokeWidth::PerVertex(v) if v.len() + 1 == expected && !v.is_empty() => {
+            let mut w = v.clone();
+            w.push(v[0]);
+            w
+        }
+        StrokeWidth::PerVertex(v) => vec![v.first().copied().unwrap_or(0.0)],
+    }
 }
 
 fn resolve_color(base: RgbaSrgb, color_override: Option<RgbaSrgb>) -> RgbaSrgb {
@@ -569,12 +612,12 @@ fn with_opacity(mut color: RgbaSrgb, opacity: f32) -> RgbaSrgb {
     color
 }
 
-fn check_geometry_size(v_len: u64, i_len: u64) -> Result<(), RuntimeError> {
-    if v_len > VERTEX_BUFFER_SIZE {
+fn check_geometry_size(v_len: u64, i_len: u64, vertex_cap: u64) -> Result<(), RuntimeError> {
+    if v_len > vertex_cap {
         return Err(RuntimeError::GeometryOverflow {
             kind: "vertex",
             needed: v_len,
-            cap: VERTEX_BUFFER_SIZE,
+            cap: vertex_cap,
         });
     }
     if i_len > INDEX_BUFFER_SIZE {

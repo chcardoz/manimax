@@ -557,10 +557,7 @@ mod tests {
         Object::Polyline {
             points: square_points(),
             closed: true,
-            stroke: Some(Stroke {
-                color: [1.0, 1.0, 1.0, 1.0],
-                width: 0.04,
-            }),
+            stroke: Some(Stroke::solid([1.0, 1.0, 1.0, 1.0], 0.04)),
             fill: None,
         }
     }

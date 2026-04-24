@@ -1,29 +1,34 @@
-//! Stroke pipeline — vertex/fragment shaders + render pipeline + uniforms.
+//! Stroke pipeline — port of
+//! `manimlib/shaders/quadratic_bezier/stroke/` @ commit `c5e23d9`.
 //!
-//! One uniform buffer, one bind group, one pipeline. Rewritten per draw via
-//! `queue.write_buffer`; Slice C may introduce a uniform ring buffer for
-//! multi-frame pipelining.
+//! Vertex stage: MVP + passthrough of the rich `StrokeVertex` attributes.
+//! Fragment stage: analytic SDF AA over the stroke's centerline-parameterised
+//! ribbon. Color is per-vertex; uniforms carry the anti-alias width (pixels)
+//! and pixel size (scene units per pixel) needed to convert `uv.y` into a
+//! pixel-space signed distance.
 
 use bytemuck::{Pod, Zeroable};
 use glam::Mat4;
 
 use crate::MSAA_SAMPLE_COUNT;
-use crate::tessellator::Vertex;
+use crate::tessellator::StrokeVertex;
 
 /// Matches the `Uniforms` struct in `shaders/path_stroke.wgsl`.
-/// `mat4x4<f32>` = 64 bytes, `vec4<f32>` = 16 bytes. No padding needed.
+/// `mat4x4<f32>` = 64 bytes, `vec4<f32>` = 16 bytes. `params.x` =
+/// anti-alias width (pixels); `params.y` = pixel size (scene units/pixel).
+/// `params.zw` unused but present for 16-byte alignment.
 #[repr(C)]
 #[derive(Copy, Clone, Debug, Pod, Zeroable)]
 pub struct StrokeUniforms {
     pub mvp: [[f32; 4]; 4],
-    pub color: [f32; 4],
+    pub params: [f32; 4],
 }
 
 impl StrokeUniforms {
-    pub fn new(mvp: Mat4, color: [f32; 4]) -> Self {
+    pub fn new(mvp: Mat4, anti_alias_width: f32, pixel_size: f32) -> Self {
         Self {
             mvp: mvp.to_cols_array_2d(),
-            color,
+            params: [anti_alias_width, pixel_size, 0.0, 0.0],
         }
     }
 }
@@ -62,14 +67,38 @@ impl StrokePipeline {
             immediate_size: 0,
         });
 
+        // StrokeVertex layout: position(8) + uv(8) + stroke_width(4) +
+        // joint_angle(4) + color(16) = 40 bytes.
         let vertex_buffer_layout = wgpu::VertexBufferLayout {
-            array_stride: std::mem::size_of::<Vertex>() as u64,
+            array_stride: std::mem::size_of::<StrokeVertex>() as u64,
             step_mode: wgpu::VertexStepMode::Vertex,
-            attributes: &[wgpu::VertexAttribute {
-                format: wgpu::VertexFormat::Float32x2,
-                offset: 0,
-                shader_location: 0,
-            }],
+            attributes: &[
+                wgpu::VertexAttribute {
+                    format: wgpu::VertexFormat::Float32x2,
+                    offset: 0,
+                    shader_location: 0,
+                },
+                wgpu::VertexAttribute {
+                    format: wgpu::VertexFormat::Float32x2,
+                    offset: 8,
+                    shader_location: 1,
+                },
+                wgpu::VertexAttribute {
+                    format: wgpu::VertexFormat::Float32,
+                    offset: 16,
+                    shader_location: 2,
+                },
+                wgpu::VertexAttribute {
+                    format: wgpu::VertexFormat::Float32,
+                    offset: 20,
+                    shader_location: 3,
+                },
+                wgpu::VertexAttribute {
+                    format: wgpu::VertexFormat::Float32x4,
+                    offset: 24,
+                    shader_location: 4,
+                },
+            ],
         };
 
         let pipeline = device.create_render_pipeline(&wgpu::RenderPipelineDescriptor {
@@ -95,7 +124,7 @@ impl StrokePipeline {
                 topology: wgpu::PrimitiveTopology::TriangleList,
                 strip_index_format: None,
                 front_face: wgpu::FrontFace::Ccw,
-                // lyon emits both windings; cull nothing for Slice B.
+                // Ribbon emits both windings depending on tangent direction.
                 cull_mode: None,
                 polygon_mode: wgpu::PolygonMode::Fill,
                 unclipped_depth: false,

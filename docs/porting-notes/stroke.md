@@ -1,52 +1,39 @@
 # Porting note: stroke pipeline
 
-**Status:** Slice B port only. Real port is Slice D.
-**Stub label:** `PORT_STUB_MANIMGL_STROKE`.
-**Manimgl reference:** `reference/manimgl/manimlib/shaders/quadratic_bezier/stroke/` (`stroke.vert`, `stroke.frag`, `stroke.geom`).
+**Status:** Slice D shipped — real port of `quadratic_bezier/stroke/*.glsl`.
+**Manimgl reference:** `reference/manimgl/manimlib/shaders/quadratic_bezier/stroke/` @ commit `c5e23d9`.
 
 ## What manimgl does
 
 Manimgl strokes every `VMobject` as a sequence of **quadratic Bézier curves**, each stroked with a shader that:
 
-1. **Accepts per-vertex attributes** — position, stroke width, unit tangent, joint type, stroke color. The width is *per vertex*, not per object, which is why fades, tapers, and highlights all work uniformly.
-2. **Uses a geometry shader** (`stroke.geom`) to widen each Bézier segment into a quad whose cross-section is the stroke width at that arc parameter.
-3. **Approximates the Bézier distance field** in the fragment shader and uses it to compute coverage for analytic anti-aliasing along the stroke's lateral edge. This is why manimgl's strokes look smooth at low resolutions where a naive fill would alias badly.
+1. **Accepts per-vertex attributes** — position, stroke width, unit tangent, joint angle, stroke color. The width is *per vertex*, not per object, which is why fades, tapers, and highlights all work uniformly.
+2. **Uses a geometry shader** (`geom.glsl`) to widen each Bézier segment into a triangle ribbon whose cross-section is the stroke width at that arc parameter.
+3. **Approximates the Bézier distance field** in the fragment shader and uses it to compute coverage for analytic anti-aliasing along the stroke's lateral edge.
 4. **Composites with alpha blending** so overlapping strokes combine correctly.
 
-The pipeline is intricate because it handles curved paths, variable width, and AA simultaneously without touching MSAA.
+## What Slice D does
 
-## What Slice B does instead
+Manimax matches manimgl's behaviour with one architectural substitution: WGSL has no geometry shader, so the ribbon is expanded CPU-side by `expand_stroke` before upload. Everything else maps:
 
-Slice B's stroke is deliberately the minimum shape that can draw a closed polyline on screen:
+1. **Path sampling.** `sample_bezpath(verbs)` — ports the intent of manimgl's per-curve sampling. Produces a flat `Vec<QuadraticSegment>` from any `BezPath`: lines become degenerate quadratics (`p1 = midpoint`), cubics split at fixed depth 2 and each leaf is least-squares-fit as a quadratic, `Close` emits a line back to the sub-path start.
+2. **Ribbon expansion.** `expand_stroke(segments, widths, color, joint)` — ports `geom.glsl`. Per-quadratic step count `(arc_len * POLYLINE_FACTOR).ceil().clamp(2, STROKE_MAX_STEPS)` matches manimgl's `POLYLINE_FACTOR = 100` / `MAX_STEPS = 32`. Miter joints use `offset = (w/2) * (N1 + N2) / (1 + N1·N2)`; `Auto` falls back to bevel when `cos(θ) ≤ MITER_COS_ANGLE_THRESHOLD = -0.8`, same as manimgl.
+3. **Per-vertex attributes.** `StrokeVertex { position, uv, stroke_width, joint_angle, color }` — drops `unit_normal` (recomputed on CPU), keeps the rest.
+4. **Fragment-stage AA.** `path_stroke.wgsl` ports `frag.glsl`: `sd = abs(uv.y) - half_width_ratio`; `alpha *= smoothstep(0.5, -0.5, sd)`. We parameterise differently (ribbon-space `uv.y` in `[-1, 1]` plus `stroke_width` + `pixel_size` uniform) but produce the same visual result.
+5. **Uniforms.** `StrokeUniforms { mvp, params: vec4 }` where `params.x = anti_alias_width` (pixels, default 1.5 matching manimgl's `ANTI_ALIAS_WIDTH`) and `params.y = pixel_size` (scene units per pixel, computed per render from `Camera`).
+6. **MSAA 4×** stays on as a secondary AA layer over the shader-driven fade.
 
-1. **Straight-line polyline only.** No Bézier math. Input is `Vec<[f32; 3]>` (z dropped to 0), fed to `lyon::path::Path` as `begin`/`line_to`/`end`.
-2. **Single `StrokeOptions::DEFAULT.with_line_width(w)`.** Rigid, per-object width. No per-vertex width attribute.
-3. **`lyon::tessellation::StrokeTessellator` produces a triangle mesh.** This is CPU-side tessellation, not a geometry shader. Output is `VertexBuffers<Vertex, u32>` where `Vertex = { position: vec2, uv: vec2 }`. `uv` is unused; reserved for Slice D per-vertex attributes.
-4. **One WGSL shader (`path_stroke.wgsl`)** with trivial vertex (apply MVP uniform, z=0) and trivial fragment (return uniform color). **No AA**, so stroke edges are aliased. Alpha blending is on at the pipeline level so the `stroke_color` RGBA's A component already works.
-5. **One uniform buffer, one bind group, one pipeline.** Rewritten via `queue.write_buffer` per draw call. Vertex/index buffers pre-sized at 64 KiB each — enough for any Slice B polyline.
-6. **No fill.** The IR's `Polyline` variant does not have a fill field for Slice B.
+## Known deltas from manimgl
 
-## What this implies
+- **No 3D stroke.** `unit_normal` is always `[0, 0, 1]` for Slice D. Out-of-plane strokes land with the 3D camera (Slice F).
+- **No round joints.** Miter / Bevel / Auto only. Round joints are non-trivial without tessellating arc fans.
+- **Cubic subdivision is fixed depth 2** (4 quadratics per cubic). Sharp cubics may kink; raise `CUBIC_SPLIT_DEPTH` if real scenes show it.
+- **Uniform color per object** for Slice D. Per-vertex color is out of scope until the Python surface Step 4 exposes it.
 
-- Visual delta vs. manimgl: Slice B strokes look **blocky and aliased**, especially at diagonal segments. This is expected.
-- At 480×270, the aliasing is visible but the shape is unambiguous.
-- Stroke width is in **scene units**, not pixels. At Slice B camera (`[-8,8] × [-4.5,4.5]`) → 480 px, each unit is 30 px. `stroke_width: 0.08` → ~2.4 px.
+## Files touched in Slice D
 
-## What Slice D will do
-
-Stop using `StrokeTessellator`. Port `quadratic_bezier/stroke/*.glsl` to WGSL:
-
-- Add per-vertex attributes: `stroke_width`, `tangent`, `joint_type`.
-- Add Bézier variants to the IR's geometry union: `BezPath { curves: Vec<QuadraticBezier> }`.
-- Compute a Bézier SDF in the fragment shader; use `fwidth` / `screenPixelRange` for coverage AA.
-- Keep straight-line polyline as a degenerate case (B(t) = A + t(C-A)).
-- Add MSAA 4× to the render target as a secondary AA layer.
-
-Per CLAUDE.md's porting practice #3, when that port happens, each function header gets a manimgl source file + commit SHA citation.
-
-## Files touched in Slice B
-
-- `crates/manim-rs-raster/src/tessellator.rs` — `Vertex`, `Mesh`, `tessellate_polyline`.
-- `crates/manim-rs-raster/src/pipelines/path_stroke.rs` — `StrokePipeline`, `StrokeUniforms`.
-- `crates/manim-rs-raster/src/shaders/path_stroke.wgsl` — WGSL source.
-- `crates/manim-rs-raster/src/lib.rs` — `Runtime::render(scene_state, camera, background)`.
+- `crates/manim-rs-raster/src/tessellator.rs` — `QuadraticSegment`, `StrokeVertex`, `JointType`, `sample_bezpath`, `expand_stroke`, `polyline_to_segments`.
+- `crates/manim-rs-raster/src/pipelines/path_stroke.rs` — new `StrokeUniforms { mvp, params }`, rich vertex attribute layout.
+- `crates/manim-rs-raster/src/shaders/path_stroke.wgsl` — analytic SDF AA fragment stage.
+- `crates/manim-rs-raster/src/lib.rs` — `Runtime::render` threads `pixel_size`; `tessellate_object` uses `expand_stroke`; `FillUniforms` split into its own struct.
+- `crates/manim-rs-raster/tests/stroke_aa.rs` — edge-fade assertion.

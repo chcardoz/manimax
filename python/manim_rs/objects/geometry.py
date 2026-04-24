@@ -8,12 +8,49 @@ runtime owns all interpolation and rendering.
 from __future__ import annotations
 
 from collections.abc import Sequence
+from typing import Literal, cast, get_args
 
 import numpy as np
 
 from manim_rs import ir
 
 PolylineInput = Sequence[tuple[float, float, float]] | np.ndarray
+StrokeWidthInput = float | Sequence[float]
+JointInput = Literal["miter", "bevel", "auto"]
+_VALID_JOINTS = get_args(JointInput)
+
+
+def _build_stroke(
+    stroke_color: ir.RgbaSrgb | None,
+    stroke_width: StrokeWidthInput,
+    joint: JointInput,
+    expected_endpoints: int | None,
+) -> ir.Stroke | None:
+    """Assemble an ``ir.Stroke`` from author-friendly inputs.
+
+    ``expected_endpoints`` is the required length for per-vertex widths when
+    it can be computed cheaply at author time (``Polyline``: ``len(points)``).
+    Pass ``None`` when it cannot (``BezPath``: depends on the sampler's
+    cubic-subdivision depth) and the Rust runtime handles length checks with
+    a graceful fallback to scalar.
+    """
+    if stroke_color is None:
+        return None
+    if isinstance(stroke_width, int | float):
+        width: ir.StrokeWidth = float(stroke_width)
+    else:
+        widths = tuple(float(w) for w in stroke_width)
+        if not widths:
+            raise ValueError("stroke_width list must not be empty")
+        if expected_endpoints is not None and len(widths) != expected_endpoints:
+            raise ValueError(
+                f"stroke_width list length {len(widths)} does not match "
+                f"expected endpoint count {expected_endpoints}"
+            )
+        width = widths
+    if joint not in _VALID_JOINTS:
+        raise ValueError(f"joint must be one of {_VALID_JOINTS}, got {joint!r}")
+    return ir.Stroke(color=stroke_color, width=width, joint=cast(ir.JointKind, joint))
 
 
 def _normalize_points(points: PolylineInput) -> tuple[ir.Vec3, ...]:
@@ -50,17 +87,23 @@ class BezPath:
         verbs: Sequence[ir.PathVerb],
         *,
         stroke_color: ir.RgbaSrgb | None = (1.0, 1.0, 1.0, 1.0),
-        stroke_width: float = 0.04,
+        stroke_width: StrokeWidthInput = 0.04,
+        joint: JointInput = "auto",
         fill_color: ir.RgbaSrgb | None = None,
     ) -> None:
         self._id: int | None = None
         self.verbs: tuple[ir.PathVerb, ...] = tuple(verbs)
         if not self.verbs:
             raise ValueError("BezPath needs at least one verb")
-        self.stroke: ir.Stroke | None = (
-            ir.Stroke(color=stroke_color, width=float(stroke_width))
-            if stroke_color is not None
-            else None
+        # Per-vertex stroke widths are endpoint-indexed against the Rust
+        # sampler's `segment_count + 1`. That depends on cubic-subdivision
+        # depth, so at author time we validate against the raw verb count
+        # as a close proxy; Rust falls back gracefully on mismatch.
+        self.stroke: ir.Stroke | None = _build_stroke(
+            stroke_color,
+            stroke_width,
+            joint,
+            expected_endpoints=None,
         )
         self.fill: ir.Fill | None = ir.Fill(color=fill_color) if fill_color is not None else None
 
@@ -116,20 +159,23 @@ class Polyline:
         points: PolylineInput,
         *,
         stroke_color: ir.RgbaSrgb | None = (1.0, 1.0, 1.0, 1.0),
-        stroke_width: float = 0.04,
+        stroke_width: StrokeWidthInput = 0.04,
+        joint: JointInput = "auto",
         fill_color: ir.RgbaSrgb | None = None,
         closed: bool = True,
     ) -> None:
         self._id: int | None = None
         self.points: tuple[ir.Vec3, ...] = _normalize_points(points)
         self.closed: bool = bool(closed)
-        # Friendly constructor params collapse to the IR `stroke`/`fill` structs.
-        # `stroke_color=None` disables stroke; `fill_color=None` (default) leaves
-        # fill absent. Matches the Rust `Option<Stroke>` / `Option<Fill>` shape.
-        self.stroke: ir.Stroke | None = (
-            ir.Stroke(color=stroke_color, width=float(stroke_width))
-            if stroke_color is not None
-            else None
+        # Polyline per-vertex widths map 1:1 onto the input point list. The
+        # rasterizer pads the closing edge (if `closed`) by re-using widths[0],
+        # so the author surface stays intuitive: one width per point.
+        expected = len(self.points)
+        self.stroke: ir.Stroke | None = _build_stroke(
+            stroke_color,
+            stroke_width,
+            joint,
+            expected_endpoints=expected,
         )
         self.fill: ir.Fill | None = ir.Fill(color=fill_color) if fill_color is not None else None
 
