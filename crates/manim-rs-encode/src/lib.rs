@@ -38,6 +38,7 @@ fn build_ffmpeg_command(path: &Path, width: u32, height: u32, fps: u32) -> Comma
     cmd
 }
 
+/// Errors surfaced by [`Encoder`] start, frame push, or finish.
 #[derive(Debug, thiserror::Error)]
 pub enum EncodeError {
     #[error("ffmpeg not found on PATH (spawn failed): {0}")]
@@ -58,6 +59,12 @@ pub enum EncodeError {
     WaitFailed(#[source] std::io::Error),
 }
 
+/// Owns the ffmpeg subprocess and its stdin pipe for streaming RGBA frames.
+///
+/// Use [`Encoder::start`] to spawn, [`Encoder::push_frame`] per frame, and
+/// [`Encoder::finish`] to close cleanly. If the value is dropped without
+/// `finish`, ffmpeg is killed (see the `Drop` impl) so a panic mid-render
+/// cannot leave an orphan subprocess.
 pub struct Encoder {
     child: Child,
     stdin: Option<ChildStdin>,
@@ -104,15 +111,19 @@ impl Encoder {
         })
     }
 
+    /// Frame width in pixels. Each [`push_frame`](Self::push_frame) must match.
     pub fn width(&self) -> u32 {
         self.width
     }
+    /// Frame height in pixels. Each [`push_frame`](Self::push_frame) must match.
     pub fn height(&self) -> u32 {
         self.height
     }
+    /// Frames-per-second baked into the ffmpeg command at spawn time.
     pub fn fps(&self) -> u32 {
         self.fps
     }
+    /// Destination mp4 path passed at [`start`](Self::start).
     pub fn output(&self) -> &Path {
         &self.output
     }

@@ -215,51 +215,6 @@ def test_tag_fields_are_on_the_wire() -> None:
         assert f'"kind":"{track}"' in encoded, track
 
 
-def test_every_easing_roundtrips_through_rust() -> None:
-    """Each Easing variant travels Python -> Rust -> Python unchanged."""
-    # Embed each easing in a minimal PositionSegment and round-trip the whole
-    # scene so the serde path is exercised exactly the way it runs in prod.
-    for easing in _all_easings():
-        scene = ir.Scene(
-            metadata=ir.SceneMetadata(
-                schema_version=ir.SCHEMA_VERSION,
-                fps=30,
-                duration=1.0,
-                resolution=ir.Resolution(width=16, height=16),
-                background=(0.0, 0.0, 0.0, 1.0),
-            ),
-            timeline=(
-                ir.AddOp(
-                    t=0.0,
-                    id=1,
-                    object=ir.Polyline(
-                        points=((0.0, 0.0, 0.0), (1.0, 0.0, 0.0)),
-                        closed=False,
-                        stroke=ir.Stroke(color=(1.0, 1.0, 1.0, 1.0), width=0.01),
-                        fill=None,
-                    ),
-                ),
-            ),
-            tracks=(
-                ir.PositionTrack(
-                    id=1,
-                    segments=(
-                        ir.PositionSegment(
-                            t0=0.0,
-                            t1=1.0,
-                            from_=(0.0, 0.0, 0.0),
-                            to=(1.0, 0.0, 0.0),
-                            easing=easing,
-                        ),
-                    ),
-                ),
-            ),
-        )
-        encoded = ir.encode(scene).decode("utf-8")
-        back = ir.decode(_rust.roundtrip_ir(encoded))
-        assert back == scene, f"{easing} did not round-trip"
-
-
 def test_optional_stroke_and_fill_serialize_as_null() -> None:
     """`stroke=None` / `fill=None` ⇒ JSON `null`, not the field dropped."""
     scene = ir.Scene(

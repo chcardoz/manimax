@@ -6,11 +6,11 @@
 
 use std::path::PathBuf;
 
-use manim_rs_ir::{
-    Easing, Object, PositionSegment, Resolution, SCHEMA_VERSION, Scene, SceneMetadata, Stroke,
-    TimelineOp, Track,
-};
+use manim_rs_ir::{Easing, PositionSegment, Track};
 use manim_rs_runtime::{FrameCache, render_to_mp4_with_cache};
+
+mod common;
+use common::short_slice_b_scene;
 
 fn mp4_path(name: &str) -> PathBuf {
     let mut p = std::env::temp_dir();
@@ -18,48 +18,11 @@ fn mp4_path(name: &str) -> PathBuf {
     p
 }
 
-/// A 15 fps × 0.4 s scene = 6 frames, same size as the existing e2e test so
-/// ffmpeg has a known-good shape. The position track runs for the full
+/// A 15 fps × 0.4 s scene = 6 frames. The position track runs for the full
 /// duration so every frame's evaluated state differs from every other —
 /// useful for proving locality in `test_local_invalidation`.
-fn six_frame_scene() -> Scene {
-    Scene {
-        metadata: SceneMetadata {
-            schema_version: SCHEMA_VERSION,
-            fps: 15,
-            duration: 0.4,
-            resolution: Resolution {
-                width: 128,
-                height: 72,
-            },
-            background: [0.0, 0.0, 0.0, 1.0],
-        },
-        timeline: vec![TimelineOp::Add {
-            t: 0.0,
-            id: 1,
-            object: Object::Polyline {
-                points: vec![
-                    [-1.0, -1.0, 0.0],
-                    [1.0, -1.0, 0.0],
-                    [1.0, 1.0, 0.0],
-                    [-1.0, 1.0, 0.0],
-                ],
-                closed: true,
-                stroke: Some(Stroke::solid([1.0, 1.0, 1.0, 1.0], 0.1)),
-                fill: None,
-            },
-        }],
-        tracks: vec![Track::Position {
-            id: 1,
-            segments: vec![PositionSegment {
-                t0: 0.0,
-                t1: 0.4,
-                from: [0.0, 0.0, 0.0],
-                to: [1.0, 0.0, 0.0],
-                easing: Easing::Linear {},
-            }],
-        }],
-    }
+fn six_frame_scene() -> manim_rs_ir::Scene {
+    short_slice_b_scene(15, 0.4)
 }
 
 #[test]

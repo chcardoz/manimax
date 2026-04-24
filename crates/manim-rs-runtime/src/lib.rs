@@ -25,6 +25,7 @@ use manim_rs_raster::{Camera, Runtime, RuntimeError as RasterError};
 
 pub use cache::{CACHE_KEY_VERSION, CacheError, CacheStats, FrameCache};
 
+/// Anything that can go wrong while rendering a scene to disk.
 #[derive(Debug, thiserror::Error)]
 pub enum RuntimeError {
     #[error("rasterizer init/render failed: {0}")]

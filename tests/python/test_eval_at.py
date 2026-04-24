@@ -9,6 +9,7 @@ SceneState → plain Python values correctly.
 from __future__ import annotations
 
 import pytest
+from conftest import canonical_square_scene
 from manim_rs import _rust, ir
 from manim_rs.animate.transforms import Translate
 from manim_rs.objects.geometry import Polyline
@@ -16,14 +17,7 @@ from manim_rs.scene import Scene
 
 
 def _canonical_scene() -> Scene:
-    scene = Scene(fps=30)
-    square = Polyline(
-        [(-1.0, -1.0, 0.0), (1.0, -1.0, 0.0), (1.0, 1.0, 0.0), (-1.0, 1.0, 0.0)],
-        stroke_width=0.08,
-    )
-    scene.add(square)
-    scene.play(Translate(square, (2.0, 0.0, 0.0), duration=2.0))
-    return scene
+    return canonical_square_scene(fps=30, duration=2.0)
 
 
 def test_eval_at_start() -> None:

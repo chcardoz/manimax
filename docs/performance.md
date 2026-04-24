@@ -236,6 +236,32 @@ between calls.
 **Lever:** pool or shrink-on-idle. Don't silently cement O10's memory
 footprint when implementing O1.
 
+### N15. Warm-cache speedup is much smaller than design implies (1080p60 / 9.5s)
+
+Measured 2026-04-23 on the showcase scene (3 objects, 9 s of content) at
+1080p60 = 570 frames:
+
+| state                              | wall   | per-frame |
+| ---------------------------------- | ------ | --------- |
+| cold (`.manim-rs-cache` deleted)   | 14.9 s | 26 ms     |
+| warm (every frame already cached)  |  9.0 s | 16 ms     |
+
+A ~40 % speedup, not the ~10× a "skip all GPU work" cache should imply.
+570 frames × 8.3 MB (1920·1080·4) = **~4.7 GB streamed through ffmpeg's
+stdin pipe per render regardless of cache**, plus per-frame
+`serde_json::to_vec(SceneState)` for the hash key (D1) and a full file
+read on every hit (D2). That pipe + serialization + disk I/O is the warm
+floor.
+
+**Implication:** at 1080p+ the cache hides less than it looks like on
+paper. The design wins big when the GPU is the bottleneck (small/cheap
+encoders, eval-only use, low-res); it doesn't help much when the
+encoder pipe dominates. The fixes already exist as separate entries —
+D1 (binary hash format), D2 (`stream_to` skipping the intermediate Vec),
+O6 / O8a (in-process encoder, the only thing that removes the 4.7 GB
+pipe). This entry exists so a future perf pass can prioritise them with
+a concrete number, not "the cache should be faster."
+
 ### N14. ffmpeg stderr is never drained during encode
 
 `crates/manim-rs-encode/src/lib.rs` — stderr is captured but only read after

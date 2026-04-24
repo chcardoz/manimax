@@ -40,6 +40,7 @@ pub const CACHE_KEY_VERSION: u32 = 1;
 const CACHE_DIR_ENV: &str = "MANIM_RS_CACHE_DIR";
 const DEFAULT_CACHE_DIR: &str = ".manim-rs-cache";
 
+/// Errors from cache directory I/O or canonical-JSON encoding of the inputs.
 #[derive(Debug, thiserror::Error)]
 pub enum CacheError {
     #[error("cache I/O: {0}")]

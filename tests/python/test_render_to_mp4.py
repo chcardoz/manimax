@@ -10,25 +10,22 @@ import shutil
 import subprocess
 from pathlib import Path
 
+import numpy as np
 import pytest
+from conftest import canonical_square_scene
 from manim_rs import _rust, ir
-from manim_rs.animate.transforms import Translate
 from manim_rs.objects.geometry import Polyline
 from manim_rs.scene import Scene
 
 
 def _build_scene() -> Scene:
-    scene = Scene(
+    return canonical_square_scene(
         fps=15,
+        duration=0.4,
+        stroke_width=0.1,
+        translate_x=1.0,
         resolution=ir.Resolution(width=128, height=72),
     )
-    square = Polyline(
-        [(-1.0, -1.0, 0.0), (1.0, -1.0, 0.0), (1.0, 1.0, 0.0), (-1.0, 1.0, 0.0)],
-        stroke_width=0.1,
-    )
-    scene.add(square)
-    scene.play(Translate(square, (1.0, 0.0, 0.0), duration=0.4))
-    return scene
 
 
 @pytest.mark.skipif(shutil.which("ffprobe") is None, reason="ffprobe not on PATH")
@@ -156,17 +153,13 @@ def test_render_to_mp4_frame0_has_content_at_origin(tmp_path: Path) -> None:
     assert len(raw) == width * height * 4, f"unexpected frame size: {len(raw)}"
 
     # Centroid of non-background pixels.
-    n, sx, sy = 0, 0, 0
-    for y in range(height):
-        for x in range(width):
-            i = (y * width + x) * 4
-            if raw[i] > 40 or raw[i + 1] > 40 or raw[i + 2] > 40:
-                n += 1
-                sx += x
-                sy += y
+    arr = np.frombuffer(raw, dtype=np.uint8).reshape(height, width, 4)
+    mask = (arr[..., 0] > 40) | (arr[..., 1] > 40) | (arr[..., 2] > 40)
+    ys, xs = np.nonzero(mask)
+    n = xs.size
     assert n > 100, f"too few bright pixels in frame 0: {n}"
 
-    cx, cy = sx / n, sy / n
+    cx, cy = float(xs.mean()), float(ys.mean())
     # At SLICE_B_DEFAULT + 480×270, scene (0,0) maps to pixel (240, 135).
     # No Translate in this fixture; the centroid sits on the origin.
     assert abs(cx - 240) <= 3, f"centroid x={cx:.1f} drifted from 240"
