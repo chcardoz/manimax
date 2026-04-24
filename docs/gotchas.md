@@ -137,7 +137,7 @@ IR scalar fields (e.g. `Easing::ExponentialDecay.half_life`, `Stroke.width`) are
 
 Fix in tests: use dyadic rationals (`0.25`, `0.125`, `0.5`, `2.0`) for any float parameter that a round-trip test compares with `==`. Don't "fix" this by switching fields to `f64` — f32 is correct for graphics-adjacent values; the issue is the test fixture, not the schema.
 
-Caught by: `test_every_easing_roundtrips_through_rust` flagging `ThereAndBackWithPauseEasing(pause_ratio=1.0/3.0)` during Slice C Step 2.
+Caught by: `test_scene_roundtrips_through_rust` (via `_wide_scene`, which distributes all 15 easing variants across track types) during Slice C Step 2. Originally surfaced as `ThereAndBackWithPauseEasing(pause_ratio=1.0/3.0)`; the current fixture uses `pause_ratio=0.25` (dyadic) to avoid the f32 round-trip.
 
 ---
 
@@ -227,7 +227,7 @@ Fix lives in: `python/manim_rs/cli.py` — the `_root` callback. Delete it only 
 
 When `t` falls in a gap between two position segments (segment N ends at 1.0, segment N+1 starts at 1.2, you ask for `t=1.1`), the evaluator must return **the most recently completed segment's `to`** — *not* the overall last segment's `to`. The bug form: iterating all segments and setting `held = last.to`, then clamping. The correct form: track `held` as iteration proceeds, updating only when a segment's `t1 <= t`.
 
-Fix lives in: `crates/manim-rs-eval/src/lib.rs` — `evaluate_position_track`. Test lives in: `crates/manim-rs-eval/src/lib.rs` (the gap test — named around "held value between segments").
+Fix lives in: `crates/manim-rs-eval/src/tracks.rs` — `evaluate_track` (generic over all track types). Test lives in: `crates/manim-rs-eval/src/lib.rs` `#[cfg(test)]` block — `gap_between_segments_holds_last_to`.
 
 This is the bug a re-implementer is most likely to re-introduce.
 

@@ -1,62 +1,52 @@
 # Status
 
-**Last updated:** 2026-04-23
+**Last updated:** 2026-04-24
 **Current slice:** Slice D — **shipped**. Plan at `docs/slices/slice-d.md`
-(now includes §11 retrospective). ADR at
-`docs/decisions/0006-slice-d-decisions.md`.
+(§11 retrospective). ADR at `docs/decisions/0006-slice-d-decisions.md`.
+Slice E not yet scoped.
 
 ## Last session did
 
-- **Slice D Step 7 shipped — slice complete.**
-  - `docs/decisions/0006-slice-d-decisions.md` (new): 6-section
-    consolidated ADR covering the stroke port (CPU expansion + WGSL
-    SDF AA), cubic→quadratic fixed-depth split, stroke-width /
-    joint schema, **cache key shape** (hashing evaluated
-    `SceneState`, not raw scene + frame index — a deliberate
-    course-correction from the plan), raw-RGBA on-disk format +
-    atomic writes + no eviction, and the Python surface changes
-    (`cache_dir` param + `CacheStats` dict return, deferred
-    `--no-cache` CLI flag). Numbered 0006 because 0005 was taken by
-    the plain-IR ADR written mid-Slice-C.
-  - `docs/slices/slice-d.md`: status flipped to **shipped**, §11
-    retrospective filled. 9 retrospective items; the load-bearing
-    ones for future agents: (1) cache-key shape deviated from the
-    plan — hashing `SceneState` per frame beats hashing scene+index;
-    (2) "cold run = every frame misses" is false because content
-    addressing lets frames with identical state share entries;
-    (3) kill struct aliases the moment semantics diverge, not syntax;
-    (4) AA tests need non-axis-aligned shapes; (5) alpha ≠ "pixel
-    lit" when background is opaque.
-  - No new code; this step was documentation-only.
-- Full suites still green from Step 6: `cargo test --workspace
-  --exclude manim-rs-py` clean; `pytest tests/python` 97/97 passed.
+Post-Slice-D cleanup and CI hardening on branch
+`chcardoz/review-current-diff` (PR #5):
 
-Slice D in aggregate:
-
-- Real stroke port: `sample_bezpath` + `expand_stroke` in
-  `tessellator.rs`; WGSL analytic SDF AA frag shader ported from
-  `manimlib/shaders/quadratic_bezier/stroke/frag.glsl @ c5e23d9`;
-  `StrokeUniforms { mvp, anti_alias_width, pixel_size }` with color
-  moved to per-vertex.
-- Per-vertex stroke width + `miter | bevel | auto` joint selection on
-  the Python surface; untagged `StrokeWidth` enum keeps scalar
-  strokes wire-compatible with Slice C payloads.
-- blake3-keyed snapshot cache at
-  `crates/manim-rs-runtime/src/cache.rs`: content-addressed, raw
-  RGBA, atomic writes, env-overridable dir. `render_to_mp4` returns
-  `CacheStats` through pyo3.
+- **Module splits (pure refactor, logic byte-identical):**
+  - `crates/manim-rs-eval/src/lib.rs` split into `state`, `evaluator`,
+    `tracks`, `lerp`, `easing` (commit `1824ad5`).
+  - `crates/manim-rs-raster/src/lib.rs` extracted `render_object` and
+    `pipe_bundle` modules (commit `fd5d142`).
+  - `///` doc comments added to public items across encode / ir /
+    runtime / raster helpers (commit `c488cde`).
+- **CI:** new `.github/workflows/ci.yml` — `ubuntu-latest` +
+  `WGPU_BACKEND=vulkan` + mesa-vulkan-drivers (lavapipe). Skips the
+  `reference/manimgl` submodule; excludes `manim-rs-py` from
+  `cargo test` (same as local invocation). Decision recorded in
+  `docs/decisions/0007-ci-linux-lavapipe.md`.
+- **Shared test fixtures:**
+  - Python: `tests/python/conftest.py::canonical_square_scene` now
+    backs `test_eval_at.py` and `test_render_to_mp4.py`. Pixel
+    assertions vectorized via numpy.
+  - Rust: `crates/manim-rs-runtime/tests/common/mod.rs::short_slice_b_scene`
+    shared across `end_to_end.rs` and `cache_behaviour.rs`.
+- **Docs:** `docs/performance.md` N15 — warm-cache speedup is ~40% on
+  1080p60 long renders (commit `8e98109`). Added a longer multi-act
+  `showcase_scene` fixture (commit `d062df6`). Updated
+  `docs/gotchas.md` pointers that the eval split invalidated.
+- Dropped `test_every_easing_roundtrips_through_rust`; coverage is
+  preserved by `test_scene_roundtrips_through_rust` via `_wide_scene`,
+  which distributes all 15 easing variants across track types.
 
 ## Next action
 
-Slice E. Not committed yet; per `slice-d.md` §9 the natural sequence
-is text (cosmic-text + swash) / TeX. Before scoping:
+Scope Slice E. Per `slice-d.md` §9 the natural sequence is text
+(cosmic-text + swash) / TeX. Before writing the slice plan:
 
 1. Re-read `docs/architecture.md` §2–§5.
 2. Skim `reference/manimgl/manimlib/mobject/{svg,tex,text}/` and
    `manimlib/utils/tex_file_writing.py` for what manimgl's text
    pipeline assumes.
-3. Write `docs/slices/slice-e.md` — scope lock first, per §11 of
-   Slice D's retro (scope lock is what made D ship cleanly).
+3. Write `docs/slices/slice-e.md` — scope lock first, per Slice D §11
+   retro (scope lock is what made D ship cleanly).
 
 ## Blockers
 
