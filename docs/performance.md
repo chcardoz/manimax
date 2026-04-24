@@ -250,6 +250,69 @@ with O11 (progress output) — both want a stderr reader.
 
 ---
 
+## D1 — Cache hash format: JSON vs. direct byte stream
+
+`cache::frame_key` serializes the per-frame `SceneState` with
+`serde_json::to_vec` then feeds those bytes into blake3. JSON formatting
+(per-`f32` decimal, field names, braces) is several× the size of a
+packed binary representation and almost certainly dominates the hash
+cost — blake3 itself is much faster than JSON format-then-parse. Already
+partially mitigated: the per-render prefix (version, metadata, camera)
+is hashed once and `Hasher::clone`'d per frame, so only the changing
+`SceneState` pays JSON cost each frame.
+
+**Lever:** implement `hash_into(&mut Hasher)` that writes raw LE bytes
+per field (no allocation, no format). `bincode` is a cheap middle ground.
+
+## D2 — Cache hit path allocates a full frame Vec
+
+`FrameCache::get` calls `fs::read(path)`, allocating ≈8 MB at 1080p,
+≈33 MB at 4K per hit. The encoder immediately writes via
+`stdin.write_all(rgba)`. A `stream_to<W: Write>(key, expected_len, &mut
+W)` that opens the file and `io::copy`'s into encoder stdin halves peak
+RSS and skips one malloc+memcpy per frame. Pair with D3.
+
+## D3 — Size-check on cache hits reads the whole file first
+
+`FrameCache::get` reads full file → checks length → returns. Switch to
+`fs::metadata(&path).ok()?.len() as usize != expected_len` first; only
+then `fs::read`. Negligible cost on happy path, skips a large read on
+truncation.
+
+## D4 — Per-frame tessellation re-allocates
+
+`tessellate_object` / `sample_bezpath` / `polyline_to_segments` /
+`resolve_stroke_widths` allocate fresh `Vec<QuadraticSegment>`,
+`Vec<f32>`, and lyon `VertexBuffers` per object per miss frame. Thread
+a `TessScratch { segs, widths, fill_verts, fill_idx, stroke_verts,
+stroke_idx }` through, `clear()` between objects. `resolve_stroke_widths`
+also clones per-vertex widths unconditionally — could return `Cow`.
+
+## D5 — Frame loop is strictly sequential; hits could pipeline
+
+`render_to_mp4_with_cache`: `eval → hash → get → (render if miss) →
+(put) → push_frame`. Once the hash is computed, hit-path work has no
+data dependency on adjacent frames. Hits could run on a reader thread
+feeding the encoder via a bounded channel, and hashes could pipeline
+ahead of wgpu submit. Fix D1 first — don't pipeline a hot JSON loop.
+
+## D6 — Cache grows unbounded; raw RGBA is 4× what it needs to be
+
+Documented design choice (ADR 0006 §E). A 1080p60 30s video is ~11 GB
+of raw RGBA. Cheap future lever: zstd level-3 on cache entries. ~4–5×
+disk savings at modest CPU cost; likely still net positive vs.
+re-rendering on hit.
+
+## D7 — `sync_all` before `persist` is stricter than rename(2) needs
+
+`FrameCache::put` calls `tmp.as_file_mut().sync_all()` before
+`tmp.persist`. POSIX `rename(2)` is atomic without an fsync — the
+sync only protects against power loss, not process crash. Cheap to
+drop if "cache entry missing after crash = miss" is acceptable (by
+design, it is).
+
+---
+
 ## Priority order (if doing a perf pass)
 
 Rough cost/benefit for a future batched pass:
