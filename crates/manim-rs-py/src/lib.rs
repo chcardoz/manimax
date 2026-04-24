@@ -12,9 +12,10 @@ use std::path::PathBuf;
 
 use manim_rs_eval::{Evaluator, SceneState};
 use manim_rs_ir::Scene;
-use manim_rs_runtime::render_to_mp4 as rust_render_to_mp4;
+use manim_rs_runtime::{CacheStats, FrameCache, render_to_mp4_with_cache};
 use pyo3::exceptions::{PyRuntimeError, PyValueError};
 use pyo3::prelude::*;
+use pyo3::types::PyDict;
 use pythonize::{depythonize, pythonize};
 
 /// Minimal build-probe so the module always has something trivially importable.
@@ -43,16 +44,21 @@ fn depythonize_scene(ir: &Bound<'_, PyAny>) -> PyResult<Scene> {
 /// `ir` is any Python value that pythonize can deserialize into a `Scene` —
 /// in practice, the dict produced by `msgspec.to_builtins(scene.ir)` on the
 /// Python side. `fps` overrides `metadata.fps` so the CLI can expose `--fps`
-/// without rewriting the Python scene. The GIL is released for the duration
-/// of the render so a caller can, e.g., run progress UI on another thread.
+/// without rewriting the Python scene. `cache_dir`, when set, points the
+/// frame cache at that directory; unset falls back to
+/// `FrameCache::open_default` (`$MANIM_RS_CACHE_DIR` or `.manim-rs-cache/`).
+/// Returns a dict with `hits`, `misses`, `write_errors` so callers (tests,
+/// perf logging) can observe what the cache did. The GIL is released for
+/// the duration of the render.
 #[pyfunction]
-#[pyo3(signature = (ir, out, fps=None))]
+#[pyo3(signature = (ir, out, fps=None, cache_dir=None))]
 fn render_to_mp4(
     py: Python<'_>,
     ir: &Bound<'_, PyAny>,
     out: &str,
     fps: Option<u32>,
-) -> PyResult<()> {
+    cache_dir: Option<&str>,
+) -> PyResult<PyObject> {
     let mut scene = depythonize_scene(ir)?;
 
     if let Some(fps) = fps {
@@ -63,8 +69,24 @@ fn render_to_mp4(
     }
 
     let out_path = PathBuf::from(out);
-    py.allow_threads(move || rust_render_to_mp4(scene, &out_path))
-        .map_err(|e| PyRuntimeError::new_err(format!("render_to_mp4 failed: {e}")))
+    let cache_dir = cache_dir.map(PathBuf::from);
+    let stats: CacheStats = py
+        .allow_threads(
+            move || -> Result<CacheStats, manim_rs_runtime::RuntimeError> {
+                let cache = match cache_dir {
+                    Some(dir) => FrameCache::open(dir)?,
+                    None => FrameCache::open_default()?,
+                };
+                render_to_mp4_with_cache(scene, &out_path, &cache)
+            },
+        )
+        .map_err(|e| PyRuntimeError::new_err(format!("render_to_mp4 failed: {e}")))?;
+
+    let d = PyDict::new(py);
+    d.set_item("hits", stats.hits)?;
+    d.set_item("misses", stats.misses)?;
+    d.set_item("write_errors", stats.write_errors)?;
+    Ok(d.into())
 }
 
 /// Evaluate the scene at time `t` and return a plain Python representation of

@@ -11,4 +11,9 @@ manim-rs-ir = { workspace = true }
 manim-rs-eval = { workspace = true }
 manim-rs-raster = { workspace = true }
 manim-rs-encode = { workspace = true }
+serde = { workspace = true }
+serde_json = { workspace = true }
+blake3 = { workspace = true }
+tempfile = { workspace = true }
 thiserror = { workspace = true }
+
