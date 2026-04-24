@@ -25,6 +25,8 @@ pub struct StrokeUniforms {
 }
 
 impl StrokeUniforms {
+    /// Pack the MVP and the AA-width / pixel-size scalars used for the
+    /// fragment-shader signed-distance fade.
     pub fn new(mvp: Mat4, anti_alias_width: f32, pixel_size: f32) -> Self {
         Self {
             mvp: mvp.to_cols_array_2d(),
@@ -33,14 +35,18 @@ impl StrokeUniforms {
     }
 }
 
+/// Byte size of [`StrokeUniforms`] — used to size the GPU uniform buffer.
 pub const UNIFORM_SIZE: u64 = std::mem::size_of::<StrokeUniforms>() as u64;
 
+/// Compiled stroke pipeline plus the bind-group layout the runtime needs
+/// to build a uniform binding.
 pub struct StrokePipeline {
     pub pipeline: wgpu::RenderPipeline,
     pub bind_group_layout: wgpu::BindGroupLayout,
 }
 
 impl StrokePipeline {
+    /// Compile the stroke WGSL shader and create the wgpu pipeline.
     pub fn new(device: &wgpu::Device, color_format: wgpu::TextureFormat) -> Self {
         let shader = device.create_shader_module(wgpu::ShaderModuleDescriptor {
             label: Some("path_stroke.wgsl"),

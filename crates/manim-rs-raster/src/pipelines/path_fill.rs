@@ -24,6 +24,8 @@ pub struct FillUniforms {
 }
 
 impl FillUniforms {
+    /// Pack a model-view-projection matrix and a color into the layout the
+    /// fill WGSL expects.
     pub fn new(mvp: Mat4, color: RgbaSrgb) -> Self {
         Self {
             mvp: mvp.to_cols_array_2d(),
@@ -32,14 +34,18 @@ impl FillUniforms {
     }
 }
 
+/// Byte size of [`FillUniforms`] — used to size the GPU uniform buffer.
 pub const UNIFORM_SIZE: u64 = std::mem::size_of::<FillUniforms>() as u64;
 
+/// Compiled fill pipeline plus the bind-group layout the runtime needs to
+/// build a uniform binding.
 pub struct FillPipeline {
     pub pipeline: wgpu::RenderPipeline,
     pub bind_group_layout: wgpu::BindGroupLayout,
 }
 
 impl FillPipeline {
+    /// Compile the fill WGSL shader and create the wgpu pipeline.
     pub fn new(device: &wgpu::Device, color_format: wgpu::TextureFormat) -> Self {
         let shader = device.create_shader_module(wgpu::ShaderModuleDescriptor {
             label: Some("path_fill.wgsl"),

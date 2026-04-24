@@ -16,6 +16,7 @@ pub struct Camera {
 }
 
 impl Camera {
+    /// 16:9 frame at `[-8, 8] × [-4.5, 4.5]` — the only camera Slice B uses.
     pub const SLICE_B_DEFAULT: Camera = Camera {
         left: -8.0,
         right: 8.0,
@@ -23,6 +24,7 @@ impl Camera {
         top: 4.5,
     };
 
+    /// Build the orthographic projection matrix for this viewport.
     pub fn projection(&self) -> Mat4 {
         // near=-1, far=1: Slice B is planar; z is squashed without discarding.
         Mat4::orthographic_rh(self.left, self.right, self.bottom, self.top, -1.0, 1.0)

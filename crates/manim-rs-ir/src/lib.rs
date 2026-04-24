@@ -15,13 +15,20 @@
 
 use serde::{Deserialize, Serialize};
 
+/// Wire-format version. Bump when the schema changes shape; the Python
+/// mirror's `SCHEMA_VERSION` must move in lockstep.
 pub const SCHEMA_VERSION: u32 = 1;
 
+/// Scene-time in seconds. `f64` matches msgspec's number type.
 pub type Time = f64;
+/// Stable per-scene id assigned by the Python frontend.
 pub type ObjectId = u32;
+/// Position / control-point coordinate in scene units.
 pub type Vec3 = [f32; 3];
+/// sRGB color with straight (non-premultiplied) alpha. Components in `[0, 1]`.
 pub type RgbaSrgb = [f32; 4];
 
+/// Output frame dimensions in pixels.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct Resolution {
@@ -29,6 +36,7 @@ pub struct Resolution {
     pub height: u32,
 }
 
+/// Scene-level invariants needed by the runtime before stepping any track.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct SceneMetadata {
@@ -99,6 +107,7 @@ impl Stroke {
     }
 }
 
+/// Solid interior fill. Currently color-only; gradients are out of scope.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct Fill {
@@ -109,6 +118,7 @@ pub struct Fill {
 // Path verbs for BezPath geometry. Mirrors SVG / lyon `PathEvent`.
 // ---------------------------------------------------------------------------
 
+/// Single verb in a Bézier path. Mirrors SVG / lyon `PathEvent`.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 #[serde(tag = "kind", deny_unknown_fields)]
 pub enum PathVerb {
@@ -123,6 +133,8 @@ pub enum PathVerb {
 // Object — every geometry can be stroked, filled, or both (null ⇒ absent).
 // ---------------------------------------------------------------------------
 
+/// A renderable shape. Every variant can carry a stroke, a fill, both, or
+/// neither (`null` on the wire ⇒ `None`).
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 #[serde(tag = "kind", deny_unknown_fields)]
 pub enum Object {
@@ -139,6 +151,8 @@ pub enum Object {
     },
 }
 
+/// Add-or-remove event keyed by `(t, id)`. The evaluator replays these to
+/// decide which objects are alive at any time `t`.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 #[serde(tag = "op", deny_unknown_fields)]
 pub enum TimelineOp {
@@ -158,6 +172,8 @@ pub enum TimelineOp {
 // (`NotQuiteThere`, `SquishRateFunc`) wrapping an inner easing.
 // ---------------------------------------------------------------------------
 
+/// All 15 manimgl rate functions. `NotQuiteThere` and `SquishRateFunc` are
+/// recursive combinators wrapping an inner easing.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 #[serde(tag = "kind", deny_unknown_fields)]
 pub enum Easing {
@@ -185,6 +201,7 @@ pub enum Easing {
 // Track segments — one shape per value type. `t0/t1/easing` are common.
 // ---------------------------------------------------------------------------
 
+/// `from → to` over `[t0, t1]` for object position, eased by `easing`.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct PositionSegment {
@@ -195,6 +212,7 @@ pub struct PositionSegment {
     pub easing: Easing,
 }
 
+/// `from → to` over `[t0, t1]` for object opacity in `[0, 1]`.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct OpacitySegment {
@@ -205,6 +223,7 @@ pub struct OpacitySegment {
     pub easing: Easing,
 }
 
+/// `from → to` over `[t0, t1]` for rotation, in radians.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct RotationSegment {
@@ -216,6 +235,7 @@ pub struct RotationSegment {
     pub easing: Easing,
 }
 
+/// `from → to` over `[t0, t1]` for uniform scale. `1.0` is identity.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct ScaleSegment {
@@ -227,6 +247,7 @@ pub struct ScaleSegment {
     pub easing: Easing,
 }
 
+/// `from → to` over `[t0, t1]` for stroke/fill color, eased componentwise.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct ColorSegment {
@@ -237,6 +258,8 @@ pub struct ColorSegment {
     pub easing: Easing,
 }
 
+/// All segments for one property of one object. Each variant is a separate
+/// list so the evaluator can pick a typed segment slice without dispatch.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 #[serde(tag = "kind", deny_unknown_fields)]
 pub enum Track {
@@ -262,6 +285,8 @@ pub enum Track {
     },
 }
 
+/// Top-level IR document: scene metadata, the add/remove timeline, and all
+/// per-property tracks. Round-trips byte-for-byte through serde + msgspec.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct Scene {
