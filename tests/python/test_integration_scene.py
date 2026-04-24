@@ -21,6 +21,7 @@ import shutil
 import subprocess
 from pathlib import Path
 
+import numpy as np
 import pytest
 from manim_rs.cli import app
 from typer.testing import CliRunner
@@ -108,23 +109,20 @@ def _centroid(
     b_band: tuple[int, int],
 ) -> tuple[float, float, int] | None:
     """Centroid of pixels whose RGB lands inside the given color bands."""
-    xs: list[int] = []
-    ys: list[int] = []
-    for y in range(HEIGHT):
-        base = y * WIDTH * 3
-        for x in range(WIDTH):
-            i = base + x * 3
-            r, g, b = data[i], data[i + 1], data[i + 2]
-            if (
-                r_band[0] <= r <= r_band[1]
-                and g_band[0] <= g <= g_band[1]
-                and b_band[0] <= b <= b_band[1]
-            ):
-                xs.append(x)
-                ys.append(y)
-    if not xs:
+    arr = np.frombuffer(data, dtype=np.uint8).reshape(HEIGHT, WIDTH, 3)
+    r, g, b = arr[..., 0], arr[..., 1], arr[..., 2]
+    mask = (
+        (r >= r_band[0])
+        & (r <= r_band[1])
+        & (g >= g_band[0])
+        & (g <= g_band[1])
+        & (b >= b_band[0])
+        & (b <= b_band[1])
+    )
+    ys, xs = np.nonzero(mask)
+    if xs.size == 0:
         return None
-    return (sum(xs) / len(xs), sum(ys) / len(ys), len(xs))
+    return (float(xs.mean()), float(ys.mean()), int(xs.size))
 
 
 def _assert_within(actual: float, expected: float, tol: float, label: str) -> None:
@@ -202,10 +200,14 @@ def _check_centroids(
         _assert_within(cy, exp_y, CENTROID_TOLERANCE_PX, f"{label} {color} cy")
 
 
+def _sum_and_nonzero(data: bytes) -> tuple[int, int]:
+    arr = np.frombuffer(data, dtype=np.uint8)
+    return int(arr.sum()), int(np.count_nonzero(arr))
+
+
 def test_frame_30_pixel_checksum_and_centroids(rendered_mp4: Path) -> None:
     data = _extract_frame_rgb(rendered_mp4, 30)
-    total = sum(data)
-    nonzero = sum(1 for b in data if b > 0)
+    total, nonzero = _sum_and_nonzero(data)
     _assert_within(total, EXPECTED_F30_SUM, EXPECTED_F30_SUM * CHECKSUM_TOLERANCE, "f30 sum")
     _assert_within(
         nonzero,
@@ -218,8 +220,7 @@ def test_frame_30_pixel_checksum_and_centroids(rendered_mp4: Path) -> None:
 
 def test_frame_55_pixel_checksum_and_centroids(rendered_mp4: Path) -> None:
     data = _extract_frame_rgb(rendered_mp4, 55)
-    total = sum(data)
-    nonzero = sum(1 for b in data if b > 0)
+    total, nonzero = _sum_and_nonzero(data)
     _assert_within(total, EXPECTED_F55_SUM, EXPECTED_F55_SUM * CHECKSUM_TOLERANCE, "f55 sum")
     _assert_within(
         nonzero,
