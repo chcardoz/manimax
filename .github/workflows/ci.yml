@@ -1,0 +1,60 @@
+name: ci
+on:
+  push:
+    branches: [main]
+  pull_request:
+
+jobs:
+  test:
+    runs-on: ubuntu-latest
+    env:
+      # Force wgpu to pick Mesa's software rasterizer. GitHub-hosted Ubuntu
+      # runners have no GPU; lavapipe is deterministic CPU Vulkan.
+      WGPU_BACKEND: vulkan
+    steps:
+      - uses: actions/checkout@v4
+        # reference/manimgl is big and no test imports it — skip the fetch.
+        with:
+          submodules: false
+
+      - uses: dtolnay/rust-toolchain@stable
+
+      - uses: Swatinem/rust-cache@v2
+        with:
+          shared-key: ci
+
+      - uses: astral-sh/setup-uv@v5
+        with:
+          enable-cache: true
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+
+      - name: Install system deps (ffmpeg + lavapipe)
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y \
+            ffmpeg \
+            mesa-vulkan-drivers \
+            libvulkan1 \
+            vulkan-tools
+          # Sanity print: confirm lavapipe is visible to Vulkan.
+          vulkaninfo --summary || true
+
+      - name: Python venv + maturin develop
+        run: |
+          uv venv
+          source .venv/bin/activate
+          uv pip install -e '.[dev]'
+          maturin develop
+
+      - name: Rust tests
+        # manim-rs-py is a pyo3 cdylib whose link step needs maturin's flags;
+        # `cargo test` alone fails at link time. Documented in CLAUDE.md.
+        run: cargo test --workspace --exclude manim-rs-py
+
+      - name: Python tests
+        run: |
+          source .venv/bin/activate
+          pytest tests/python -v
