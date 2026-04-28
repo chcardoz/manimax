@@ -16,6 +16,8 @@
 
 pub mod cache;
 
+use std::fs::File;
+use std::io::{self, BufWriter};
 use std::path::Path;
 
 use manim_rs_encode::{EncodeError, Encoder};
@@ -34,6 +36,16 @@ pub enum RuntimeError {
     Encode(#[from] EncodeError),
     #[error("cache: {0}")]
     Cache(#[from] CacheError),
+    #[error("png write failed: {0}")]
+    Png(String),
+    #[error("io: {0}")]
+    Io(#[from] io::Error),
+}
+
+impl From<png::EncodingError> for RuntimeError {
+    fn from(e: png::EncodingError) -> Self {
+        RuntimeError::Png(e.to_string())
+    }
 }
 
 /// Convenience: render with the default cache location (`$MANIM_RS_CACHE_DIR`
@@ -96,4 +108,45 @@ pub fn render_to_mp4_with_cache(
 
     encoder.finish()?;
     Ok(stats)
+}
+
+/// Render a single frame at time `t` and write it as a PNG at `out`.
+///
+/// Bypasses the ffmpeg encoder entirely — eval + raster only. Useful for
+/// inspection (`python -m manim_rs frame ...`), snapshot tests (Slice E
+/// Step 6 corpus baselines), and quick iteration where mp4 round-tripping
+/// would dominate latency.
+///
+/// `t` is clamped silently to `[0, duration]` semantics by the evaluator —
+/// `eval_at(t)` past the timeline holds the last reached state, so a
+/// caller can ask for `t = +inf` to get the final frame without
+/// special-casing the duration.
+pub fn render_frame_to_png(scene: Scene, out: &Path, t: f64) -> Result<(), RuntimeError> {
+    let meta = scene.metadata.clone();
+    let runtime = Runtime::new(meta.resolution.width, meta.resolution.height)?;
+    let evaluator = Evaluator::new(scene);
+    let camera = Camera::SLICE_B_DEFAULT;
+    let background: [f64; 4] = [
+        meta.background[0] as f64,
+        meta.background[1] as f64,
+        meta.background[2] as f64,
+        meta.background[3] as f64,
+    ];
+
+    let state = evaluator.eval_at(t);
+    let pixels = runtime.render(&state, &camera, background)?;
+
+    write_rgba_png(out, meta.resolution.width, meta.resolution.height, &pixels)
+}
+
+fn write_rgba_png(path: &Path, width: u32, height: u32, rgba: &[u8]) -> Result<(), RuntimeError> {
+    let file = File::create(path)?;
+    let w = BufWriter::new(file);
+    let mut encoder = png::Encoder::new(w, width, height);
+    encoder.set_color(png::ColorType::Rgba);
+    encoder.set_depth(png::BitDepth::Eight);
+    encoder.set_source_srgb(png::SrgbRenderingIntent::Perceptual);
+    let mut writer = encoder.write_header()?;
+    writer.write_image_data(rgba)?;
+    Ok(())
 }

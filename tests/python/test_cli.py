@@ -64,6 +64,30 @@ def _ffprobe(path: Path) -> str:
     return probe.stdout
 
 
+def test_cli_frame_produces_valid_png(scene_file: Path, tmp_path: Path) -> None:
+    """`frame` writes a PNG of the requested resolution at the requested timestamp."""
+    out = tmp_path / "cli.png"
+    runner = CliRunner()
+    result = runner.invoke(
+        app,
+        [
+            "frame",
+            str(scene_file),
+            "DemoScene",
+            str(out),
+            "--t",
+            "0.0",
+            "-r",
+            "128x72",
+        ],
+    )
+
+    assert result.exit_code == 0, result.output
+    assert out.exists()
+    # PNG magic bytes \x89PNG\r\n\x1a\n
+    assert out.read_bytes()[:8] == b"\x89PNG\r\n\x1a\n"
+
+
 @pytest.mark.skipif(shutil.which("ffprobe") is None, reason="ffprobe not on PATH")
 def test_cli_render_produces_valid_mp4(scene_file: Path, tmp_path: Path) -> None:
     out = tmp_path / "cli.mp4"

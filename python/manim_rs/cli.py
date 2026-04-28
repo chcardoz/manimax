@@ -3,10 +3,17 @@
     python -m manim_rs render <module_path> <SceneName> <out.mp4> \
         [--quality low|med|high|uhd] [-r WxH] [--fps N] [--duration S] [-o]
 
+    python -m manim_rs frame <module_path> <SceneName> <out.png> \
+        --t <SECONDS> [--quality low|med|high|uhd] [-r WxH] [--fps N] [-o]
+
 ``<module_path>`` is either a path to a ``.py`` file or a dotted importable
 module. ``<SceneName>`` must be a concrete subclass of ``manim_rs.Scene``
 declared (or imported) in that module. The CLI instantiates the scene,
 runs ``construct()``, and hands the IR to the Rust runtime.
+
+``frame`` runs eval+raster for one timestamp `--t` and writes a PNG; it
+skips the ffmpeg encoder entirely. Useful for visual inspection and
+snapshot baselines.
 
 Resolution comes from ``--quality`` (preset) or ``-r/--resolution`` (explicit
 ``WxH``). Explicit wins. When neither is given, the scene's own default is
@@ -70,6 +77,37 @@ def _parse_resolution(s: str) -> tuple[int, int]:
     return w, h
 
 
+def _resolve_dimensions(
+    quality: Quality | None, resolution: str | None
+) -> tuple[int, int] | tuple[None, None]:
+    if resolution is not None:
+        return _parse_resolution(resolution)
+    if quality is not None:
+        return _QUALITY_RESOLUTIONS[quality]
+    return (None, None)
+
+
+def _build_scene_ir(
+    module_path: str,
+    scene_name: str,
+    fps: int,
+    w: int | None,
+    h: int | None,
+):
+    try:
+        scene_cls = load_scene(module_path, scene_name)
+    except DiscoveryError as err:
+        raise typer.BadParameter(str(err), param_hint="module_path/scene_name") from err
+
+    scene_kwargs: dict = {"fps": fps}
+    if w is not None:
+        scene_kwargs["resolution"] = ir.Resolution(width=w, height=h)
+
+    scene = scene_cls(**scene_kwargs)
+    scene.construct()
+    return scene.ir
+
+
 def _open_file(path: Path) -> None:
     if sys.platform == "darwin":
         cmd = ["open", str(path)]
@@ -122,25 +160,8 @@ def render(
     if fps <= 0:
         raise typer.BadParameter("fps must be positive", param_hint="--fps")
 
-    if resolution is not None:
-        w, h = _parse_resolution(resolution)
-    elif quality is not None:
-        w, h = _QUALITY_RESOLUTIONS[quality]
-    else:
-        w, h = (None, None)
-
-    try:
-        scene_cls = load_scene(module_path, scene_name)
-    except DiscoveryError as err:
-        raise typer.BadParameter(str(err), param_hint="module_path/scene_name") from err
-
-    scene_kwargs: dict = {"fps": fps}
-    if w is not None:
-        scene_kwargs["resolution"] = ir.Resolution(width=w, height=h)
-
-    scene = scene_cls(**scene_kwargs)
-    scene.construct()
-    scene_ir = scene.ir
+    w, h = _resolve_dimensions(quality, resolution)
+    scene_ir = _build_scene_ir(module_path, scene_name, fps, w, h)
 
     if duration is not None:
         scene_ir = msgspec.structs.replace(
@@ -149,6 +170,50 @@ def render(
         )
 
     _rust.render_to_mp4(ir.to_builtins(scene_ir), str(out))
+    typer.echo(f"wrote {out}")
+
+    if open_after:
+        _open_file(out)
+
+
+@app.command()
+def frame(
+    module_path: str = typer.Argument(
+        ...,
+        help="Path to a .py file or a dotted importable module containing the scene.",
+    ),
+    scene_name: str = typer.Argument(..., help="Name of the Scene subclass to render."),
+    out: Path = typer.Argument(..., help="Output PNG path."),  # noqa: B008
+    t: float = typer.Option(
+        0.0, "--t", help="Timestamp in seconds at which to evaluate the scene."
+    ),
+    quality: Quality = typer.Option(  # noqa: B008
+        None,
+        "--quality",
+        case_sensitive=False,
+        help="Resolution preset.",
+    ),
+    resolution: str = typer.Option(
+        None,
+        "-r",
+        "--resolution",
+        help='Resolution override "WxH". Wins over --quality.',
+    ),
+    fps: int = typer.Option(30, "--fps", help="Frames per second (only affects metadata)."),
+    open_after: bool = typer.Option(
+        False, "-o", "--open", help="Open the output file once rendering finishes."
+    ),
+) -> None:
+    """Render a single frame at time ``--t`` from ``scene_name`` to ``out`` as PNG."""
+    if t < 0.0:
+        raise typer.BadParameter("--t must be non-negative", param_hint="--t")
+    if fps <= 0:
+        raise typer.BadParameter("fps must be positive", param_hint="--fps")
+
+    w, h = _resolve_dimensions(quality, resolution)
+    scene_ir = _build_scene_ir(module_path, scene_name, fps, w, h)
+
+    _rust.render_frame(ir.to_builtins(scene_ir), str(out), float(t))
     typer.echo(f"wrote {out}")
 
     if open_after:

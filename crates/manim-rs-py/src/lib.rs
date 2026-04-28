@@ -12,7 +12,7 @@ use std::path::PathBuf;
 
 use manim_rs_eval::{Evaluator, SceneState};
 use manim_rs_ir::Scene;
-use manim_rs_runtime::{CacheStats, FrameCache, render_to_mp4_with_cache};
+use manim_rs_runtime::{CacheStats, FrameCache, render_frame_to_png, render_to_mp4_with_cache};
 use pyo3::exceptions::{PyRuntimeError, PyValueError};
 use pyo3::prelude::*;
 use pyo3::types::PyDict;
@@ -100,11 +100,24 @@ fn eval_at(py: Python<'_>, ir: &Bound<'_, PyAny>, t: f64) -> PyResult<PyObject> 
     Ok(obj.into())
 }
 
+/// Render a single frame at time `t` to a PNG at `out`. Skips the ffmpeg
+/// encoder — eval + raster + PNG. Useful for snapshot inspection and
+/// per-frame baselines (Slice E Step 6).
+#[pyfunction]
+fn render_frame(py: Python<'_>, ir: &Bound<'_, PyAny>, out: &str, t: f64) -> PyResult<()> {
+    let scene = depythonize_scene(ir)?;
+    let out_path = PathBuf::from(out);
+    py.allow_threads(move || render_frame_to_png(scene, &out_path, t))
+        .map_err(|e| PyRuntimeError::new_err(format!("render_frame failed: {e}")))?;
+    Ok(())
+}
+
 #[pymodule]
 fn _rust(m: &Bound<'_, PyModule>) -> PyResult<()> {
     m.add_function(wrap_pyfunction!(__build_probe, m)?)?;
     m.add_function(wrap_pyfunction!(roundtrip_ir, m)?)?;
     m.add_function(wrap_pyfunction!(render_to_mp4, m)?)?;
     m.add_function(wrap_pyfunction!(eval_at, m)?)?;
+    m.add_function(wrap_pyfunction!(render_frame, m)?)?;
     Ok(())
 }
