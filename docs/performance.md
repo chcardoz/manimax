@@ -339,6 +339,185 @@ design, it is).
 
 ---
 
+## Slice E (text + math) observations
+
+### E1. Lyon fill tolerance is global; em-scaled paths want their own knob
+
+Slice E pinned `FILL_TOLERANCE = 0.001` in
+`crates/manim-rs-raster/src/tessellator.rs` (ADR 0008 §D, gotchas).
+0.001 is the right answer for em-scaled glyph outlines but
+ludicrously over-tessellated for SVG-style geometry where 0.25
+would suffice. Tessellation cost scales as `1 / sqrt(tolerance)`
+so glyph paths now do ~16× more work than they need to at small
+display sizes.
+
+**Lever:** thread tolerance through as a per-Object knob (or per
+object-kind default), so SVG-imported paths can keep their cheap
+0.25 budget while glyph paths stay at 0.001. Adaptive variant:
+derive tolerance from the object's world-space scale × camera
+zoom — a glyph rendered at 16-px height doesn't need sub-em
+flatness. Both worth a measurement pass once Slice E text scenes
+appear in benchmarks; today's text scenes are tens of glyphs and
+tessellation cost is invisible against `eval_at` + GPU submit.
+
+### E2. Glyph outlines extracted at 1024 ppem then post-scaled
+
+`crates/manim-rs-text/src/glyph.rs::OUTLINE_PPEM = 1024`. Every
+glyph passes through one extra `apply_affine` to scale down to
+the caller's requested ppem. Two consequences worth tracking if
+text renders ever land in the perf probe:
+
+- **Allocation cost.** `kurbo::BezPath::apply_affine` walks every
+  command in place — no extra allocation, but it's an extra
+  pass over the path per glyph compile.
+- **Cache stability.** `compile_tex` is cached blake3-by-Object
+  (ADR 0008 §B); the affine is applied inside the cached compile,
+  so warm hits skip it. Cold compiles only — fine.
+
+No action needed today. Listed so a future perf-pass reader
+knows the high-ppem extraction is deliberate (hinting avoidance,
+ADR 0008 §C) and shouldn't be "optimized away."
+
+### E3a. `PyRuntime` PyClass: hold `Runtime` + `Evaluator` across calls
+
+Today every `render_to_mp4` / `render_frame` / `eval_at` Python entry
+point rebuilds the wgpu device, recompiles pipelines, and (for
+`eval_at`) recompiles the `Evaluator`. The fixed overhead is the O1
+~40 ms baseline (worse for `eval_at` if the scene has many tracks).
+This was acceptable for one-shot CLI but blocks every interactive
+use case the architecture was supposed to enable: scrubbing, snapshot
+batches, regenerate-on-edit, REPL-driven inspection.
+
+**Lever:** introduce a `#[pyclass] struct PyRuntime` exposed as
+`manim_rs._rust.PyRuntime` (or similar) holding
+`Arc<Mutex<Runtime>>` and `Option<Evaluator>`. Methods:
+`render_frame(t, out)`, `render_range(start, end, sink)`, `eval_at(t)`,
+`set_scene(ir)`. Per pyo3 docs, the struct must be `Send + Sync`;
+`Mutex<Runtime>` covers it. Compounds with O1 (cached `Runtime`) and
+N12 (cached `Evaluator`) — they collapse into one fix.
+
+**Trigger:** when a caller (snapshot test corpus, interactive
+scrubber, agentic regenerate-on-edit) calls a render/eval entry
+point more than ~5 times per process. Slice E Step 6's corpus is
+the most likely first trigger; doing this before Step 6 would let
+the corpus run without 40 ms × N overhead.
+
+Cost: medium (new pyo3 surface, lifecycle docs, small refactor of
+existing `#[pyfunction]`s into thin wrappers). Biggest single
+architectural lever in the current codebase.
+
+### E3b. `tracing` instrumentation at four runtime boundaries (prerequisite)
+
+Listed as N9 above with no concrete shape; surfacing it here with
+a concrete diff sketch because every E-tier perf decision below it
+remains guesswork without it.
+
+**Sketch:**
+
+```toml
+# Cargo.toml workspace deps
+tracing = "0.1"
+tracing-subscriber = { version = "0.3", features = ["json"] }
+```
+
+```rust
+// crates/manim-rs-runtime/src/lib.rs
+#[tracing::instrument(skip_all, fields(t = scene.metadata.duration))]
+pub fn render_to_mp4_with_cache(...) { ... }
+
+// inside the frame loop:
+let _span = tracing::info_span!("eval_at", t).entered();
+// drop, then
+let _span = tracing::info_span!("raster::render").entered();
+// etc. for readback, encoder::push_frame
+```
+
+Plus a `--trace-json` CLI flag in `python/manim_rs/cli.py` that
+sets `RUST_LOG=manim_rs=trace` and a `tracing-subscriber` JSON
+emitter writing to a file. Chrome-trace viewer ingests this
+directly. One afternoon. Gates O2/O3/O4/N6/D1.
+
+**Trigger:** before any of those perf items get touched. Don't
+optimize what you haven't measured.
+
+### E3c. `From<RuntimeError> for PyErr` instead of stringifying at the boundary
+
+Every Python-facing function in `manim-rs-py/src/lib.rs` wraps
+errors via `.map_err(|e| PyRuntimeError::new_err(format!("X
+failed: {e}")))`. `RuntimeError` is `thiserror`-derived with a
+proper `source()` chain (Encoder → io::Error, etc.); the `format!`
+flattens it. Python tracebacks lose the chain.
+
+**Fix:** one `From<RuntimeError> for PyErr` impl that walks the
+chain and concatenates causes (or, better, raises a `PyRuntimeError`
+with `__cause__` set via pyo3's `PyErr::set_cause`). The four
+`map_err` closures collapse to plain `?`. Negligible perf, real
+debuggability win — Python users debugging a render failure see
+"failed to spawn ffmpeg → No such file or directory" instead of
+"render_to_mp4 failed: encoder error."
+
+**Trigger:** any time someone files a "render failed and I can't
+tell why" report. Cost: small (one impl, four call-site cleanups).
+
+### E3. `tex_validate` runs RaTeX parse+layout twice per Tex (once at construction, once at compile)
+
+Python's `Tex.__init__` calls `_rust.tex_validate` after macro
+expansion. The Evaluator's first `compile_tex` for the same
+source then calls `tex_to_display_list` again — same parser,
+same layout pass, no shared state. Both are sub-millisecond for
+short expressions; not on any critical path today.
+
+**Lever (latent):** `Tex.__init__` could stash the parsed
+`DisplayList` on the Python object and pyo3 could pass it to
+`compile_tex` via a parallel path. Adds API surface; only worth
+it if profiling shows RaTeX layout dominating one day. Logged
+here so we don't forget the duplication exists.
+
+---
+
+## Future architectural direction
+
+### Single general-purpose render entry point (vs. one per output format)
+
+Mid-Slice-E we shipped `render_frame_to_png(scene, out, t)`
+alongside the existing `render_to_mp4(scene, out)` (ADR 0008 §F).
+Both are useful, but the right shape is a **single
+render-N-frames function that's output-format-agnostic** —
+PNG, MP4, WebM, GIF, APNG, numbered PNG/JPEG image sequences,
+raw RGBA dumps, in-memory `Vec<Vec<u8>>` for tests, and any
+future format (AVIF, animated WebP, ProRes, …) all flow through
+the same entry point. Today's pair is fine; a third format
+shouldn't grow as a third entry point — that's the trigger to
+consolidate.
+
+Sketch: `render(scene, frames: impl Iterator<Item=f64>, sink:
+&mut impl FrameSink)` where `FrameSink` is `push_frame(rgba) ->
+Result<()>` plus lifecycle hooks (`begin`, `finish`). Concrete
+sinks:
+
+- `Mp4Sink` / `WebmSink` / `GifSink` / `ApngSink` — wrap ffmpeg
+  (or in-process libavcodec eventually) with format-specific
+  args.
+- `PngSink(path)` — single-frame PNG; today's
+  `render_frame_to_png` collapses to `render(scene, [t], &mut
+  PngSink::new(out))`.
+- `ImageSequenceSink(dir, "frame_%05d.png")` — numbered
+  per-frame files, matches manimgl's `--write_images` mode.
+- `RawRgbaSink(writer)` — uncompressed framebuffer dump for
+  lossless re-encoding pipelines.
+- `MemorySink` — collects frames into `Vec<Vec<u8>>` so
+  snapshot tests stop choosing between "render to disk and read
+  back" vs. "reach into the runtime."
+- `CallbackSink(impl FnMut(rgba))` — for users who want to do
+  their own thing per frame without writing a Sink impl.
+
+Not urgent. Cost: medium. Triggers: (a) a third format request,
+(b) the runtime grows another single-purpose entry point, (c) a
+caller wants the rendered bytes without an intermediate file,
+(d) someone asks for image-sequence output.
+
+---
+
 ## Priority order (if doing a perf pass)
 
 Rough cost/benefit for a future batched pass:
