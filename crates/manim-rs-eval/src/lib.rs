@@ -40,10 +40,12 @@ mod easing;
 mod evaluator;
 mod lerp;
 mod state;
+mod tex;
 mod tracks;
 
 pub use evaluator::{Evaluator, eval_at};
 pub use state::{ObjectState, SceneState};
+pub use tex::compile_tex;
 
 #[cfg(test)]
 mod tests {
@@ -581,6 +583,134 @@ mod tests {
         assert_eq!(s.scale, 2.0);
         let c = s.color_override.unwrap();
         assert!((c[0] - 0.5).abs() < 1e-6);
+    }
+
+    // ----------------------------------------------------------------
+    // Slice E Step 4: Tex fan-out at eval time.
+    // ----------------------------------------------------------------
+
+    #[test]
+    fn tex_eval_at_fans_out_into_bezpath_states() {
+        // Eval-time fan-out replaces a single Object::Tex with N
+        // ObjectStates, each carrying a fill-only Object::BezPath. The
+        // rasterizer never sees Object::Tex.
+        use manim_rs_ir::Object;
+        use std::collections::BTreeMap;
+
+        let tex_object = Object::Tex {
+            src: r"x^2 + y^2 = r^2".to_string(),
+            macros: BTreeMap::new(),
+            color: [1.0, 1.0, 1.0, 1.0],
+            scale: 1.0,
+        };
+        let scene = make_scene(
+            vec![TimelineOp::Add {
+                t: 0.0,
+                id: 1,
+                object: tex_object,
+            }],
+            vec![],
+            1.0,
+        );
+
+        let state = eval_at(&scene, 0.0);
+        assert!(
+            state.objects.len() > 1,
+            "Tex must fan out into multiple BezPath states (got {})",
+            state.objects.len()
+        );
+        for s in &state.objects {
+            assert_eq!(s.id, 1, "fan-out children share the parent ObjectId");
+            match &*s.object {
+                Object::BezPath {
+                    verbs,
+                    stroke,
+                    fill,
+                } => {
+                    assert!(!verbs.is_empty());
+                    assert!(stroke.is_none());
+                    assert!(fill.is_some());
+                }
+                Object::Tex { .. } => panic!("Tex must not survive eval"),
+                _ => panic!("fan-out must emit only Object::BezPath"),
+            }
+        }
+    }
+
+    #[test]
+    fn tex_scale_multiplies_into_object_state_scale() {
+        // Tex.scale is applied at fan-out, multiplied with the parent
+        // ObjectState.scale (which the Track::Scale composition already
+        // resolved). Tex.scale=4 with no Scale track ⇒ child.scale=4.
+        use manim_rs_ir::Object;
+        use std::collections::BTreeMap;
+
+        let scene = make_scene(
+            vec![TimelineOp::Add {
+                t: 0.0,
+                id: 1,
+                object: Object::Tex {
+                    src: r"x".to_string(),
+                    macros: BTreeMap::new(),
+                    color: [1.0, 1.0, 1.0, 1.0],
+                    scale: 4.0,
+                },
+            }],
+            vec![],
+            1.0,
+        );
+
+        let state = eval_at(&scene, 0.0);
+        assert!(!state.objects.is_empty());
+        for s in &state.objects {
+            assert_eq!(
+                s.scale, 4.0,
+                "Tex.scale=4 must surface as ObjectState.scale=4"
+            );
+        }
+    }
+
+    #[test]
+    fn tex_scale_composes_with_scale_track() {
+        // Tex.scale=2 plus a Scale track of constant 3 ⇒ child.scale = 6
+        // (the tracked scale × the IR scale). This is the composition
+        // that motivated decision (b): one apply site, no double-bake.
+        use manim_rs_ir::Object;
+        use std::collections::BTreeMap;
+
+        let scene = make_scene(
+            vec![TimelineOp::Add {
+                t: 0.0,
+                id: 1,
+                object: Object::Tex {
+                    src: r"x".to_string(),
+                    macros: BTreeMap::new(),
+                    color: [1.0, 1.0, 1.0, 1.0],
+                    scale: 2.0,
+                },
+            }],
+            vec![Track::Scale {
+                id: 1,
+                segments: vec![ScaleSegment {
+                    t0: 0.0,
+                    t1: 1.0,
+                    from: 3.0,
+                    to: 3.0,
+                    easing: Easing::Linear {},
+                }],
+            }],
+            1.0,
+        );
+
+        let state = eval_at(&scene, 0.5);
+        assert!(!state.objects.is_empty());
+        for s in &state.objects {
+            assert!(
+                (s.scale - 6.0).abs() < 1e-6,
+                "expected 2.0 * 3.0 = 6.0, got {}",
+                s.scale
+            );
+        }
     }
 
     #[test]
