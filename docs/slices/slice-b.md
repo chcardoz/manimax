@@ -1,6 +1,6 @@
 # Slice B — Python → IR → N frames → mp4
 
-**Status:** planned, not started.
+**Status:** shipped.
 **Date:** 2026-04-21.
 **Supersedes:** an earlier informal "Slice A" (triangle → PNG), rejected for not exercising the architectural thesis.
 
