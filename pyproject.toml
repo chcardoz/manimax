@@ -28,7 +28,7 @@ dev = [
 manifest-path = "crates/manim-rs-py/Cargo.toml"
 module-name = "manim_rs._rust"
 python-source = "python"
-features = ["pyo3/extension-module"]
+features = ["manim-rs-py/extension-module"]
 
 [tool.ruff]
 line-length = 100

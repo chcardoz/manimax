@@ -52,9 +52,9 @@ The five commands a new agent needs within five minutes:
 source .venv/bin/activate && maturin develop
 
 # Rust tests (all crates in the workspace).
-# Exclude manim-rs-py: it's a pyo3 cdylib whose link step needs maturin's flags;
-# `cargo test` alone fails at link time.
-cargo test --workspace --exclude manim-rs-py
+# manim-rs-py's `extension-module` is gated behind a feature so this works
+# without `--exclude`; maturin still turns it on for actual extension builds.
+cargo test --workspace
 
 # Python tests (pytest config in pyproject.toml).
 pytest tests/python

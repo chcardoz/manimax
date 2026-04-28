@@ -34,8 +34,14 @@ lyon = "1"
 glam = { version = "0.29", features = ["bytemuck"] }
 bytemuck = { version = "1", features = ["derive"] }
 
-# Python binding
-pyo3 = { version = "0.23", features = ["extension-module", "abi3-py310"] }
+# Python binding.
+# `extension-module` deliberately omitted here: it disables linking to
+# libpython and breaks `cargo test --workspace`. The `manim-rs-py` crate
+# re-exposes it as its own feature, which `pyproject.toml`'s
+# `[tool.maturin].features` turns on for the actual extension build.
+# See pyo3 FAQ "I can't run `cargo test`" (PyO3 0.23-compatible workaround;
+# the cleaner `PYO3_BUILD_EXTENSION_MODULE` env-var path is pyo3 ≥0.26).
+pyo3 = { version = "0.23", features = ["abi3-py310"] }
 pythonize = "0.23"
 
 # Error handling
