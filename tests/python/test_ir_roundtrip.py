@@ -262,7 +262,7 @@ def test_ir_decode_accepts_str_and_bytes() -> None:
 
 _UNKNOWN_FIELD_SITES = [
     # (description, needle present in wide-scene payload, replacement)
-    ("metadata", '"schema_version":1', '"schema_version":1,"extra":"nope"'),
+    ("metadata", '"schema_version":2', '"schema_version":2,"extra":"nope"'),
     ("add_op", '"op":"Add"', '"op":"Add","extra":"nope"'),
     ("remove_op", '"op":"Remove"', '"op":"Remove","extra":"nope"'),
     ("polyline", '"kind":"Polyline"', '"kind":"Polyline","extra":"nope"'),

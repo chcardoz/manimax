@@ -13,11 +13,17 @@
 //! fields whose value may be `null`. This matches the "all fields required"
 //! principle while expressing absence cleanly.
 
+use std::collections::BTreeMap;
+
 use serde::{Deserialize, Serialize};
 
 /// Wire-format version. Bump when the schema changes shape; the Python
 /// mirror's `SCHEMA_VERSION` must move in lockstep.
-pub const SCHEMA_VERSION: u32 = 1;
+///
+/// - v1 (Slice B–D): `Polyline` + `BezPath` objects.
+/// - v2 (Slice E Step 3): adds `Object::Tex` carrying source string +
+///   user-supplied macros, expanded to BezPaths at eval time.
+pub const SCHEMA_VERSION: u32 = 2;
 
 /// Scene-time in seconds. `f64` matches msgspec's number type.
 pub type Time = f64;
@@ -148,6 +154,31 @@ pub enum Object {
         verbs: Vec<PathVerb>,
         stroke: Option<Stroke>,
         fill: Option<Fill>,
+    },
+    /// LaTeX-flavored math source. The Rust eval layer compiles this once
+    /// to a list of filled `BezPath`s via `manim-rs-tex`. Time-invariant:
+    /// the same `(src, macros, color, scale)` always produces the same
+    /// outlines, so the cache key is content-only.
+    ///
+    /// Macro expansion is **Python-side** — by the time a `Tex` reaches
+    /// Rust, `src` is already-expanded source. `macros` rides through
+    /// for cache-key stability and roundtrip fidelity, not because Rust
+    /// re-expands.
+    ///
+    /// `BTreeMap` (not `HashMap`) for canonical key ordering: an
+    /// insertion-order map would invalidate the cache on cosmetic Python
+    /// dict reordering. Slice D §5 / Slice E §6 gotcha #4.
+    Tex {
+        src: String,
+        macros: BTreeMap<String, String>,
+        /// Default color applied to items RaTeX emits in plain black
+        /// (i.e. anything not explicitly `\textcolor{...}`'d). Per-item
+        /// colors from the source ride through unchanged. Slice E §6
+        /// gotcha #10.
+        color: RgbaSrgb,
+        /// Multiplier applied on top of the adapter's
+        /// `WORLD_UNITS_PER_EM`. `1.0` is identity.
+        scale: f32,
     },
 }
 
@@ -393,6 +424,35 @@ mod tests {
         let json = serde_json::to_string(&obj).unwrap();
         let back: Object = serde_json::from_str(&json).unwrap();
         assert_eq!(obj, back);
+    }
+
+    #[test]
+    fn tex_object_roundtrips() {
+        let mut macros = BTreeMap::new();
+        macros.insert("RR".to_string(), r"\mathbb{R}".to_string());
+        macros.insert("NN".to_string(), r"\mathbb{N}".to_string());
+        let obj = Object::Tex {
+            src: r"\sum_{i=1}^n i = \frac{n(n+1)}{2}".to_string(),
+            macros,
+            color: [1.0, 1.0, 1.0, 1.0],
+            scale: 2.5,
+        };
+        let json = serde_json::to_string(&obj).unwrap();
+        assert!(json.contains(r#""kind":"Tex""#), "got {json}");
+        // BTreeMap serializes with sorted keys — cosmetic Python dict
+        // reordering must not change cache identity.
+        let nn_pos = json.find(r#""NN""#).unwrap();
+        let rr_pos = json.find(r#""RR""#).unwrap();
+        assert!(nn_pos < rr_pos, "macros not key-sorted in {json}");
+        let back: Object = serde_json::from_str(&json).unwrap();
+        assert_eq!(obj, back);
+    }
+
+    #[test]
+    fn schema_version_is_two() {
+        // Wire-format guard: bumping forgets to update the Python mirror
+        // unless someone reads this test failure first.
+        assert_eq!(SCHEMA_VERSION, 2);
     }
 
     #[test]

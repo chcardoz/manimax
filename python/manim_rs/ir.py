@@ -14,7 +14,7 @@ from typing import Literal
 
 import msgspec
 
-SCHEMA_VERSION: int = 1
+SCHEMA_VERSION: int = 2
 
 # ============================================================================
 # === Scalars ===
@@ -166,7 +166,33 @@ class BezPath(
     fill: Fill | None
 
 
-Object = Polyline | BezPath
+class Tex(
+    msgspec.Struct,
+    tag_field="kind",
+    tag="Tex",
+    forbid_unknown_fields=True,
+    frozen=True,
+):
+    """LaTeX-flavored math source. Compiled to filled BezPaths in Rust eval.
+
+    `macros` is a ``dict[str, str]`` of no-arg shortcut macros — Python-side
+    pre-expansion (Step 5) bakes them into ``src`` before the IR ships, but
+    the dict still rides through for cache-key stability and roundtrip.
+    Use a key-sorted dict at construction time so the wire format matches
+    Rust's BTreeMap canonical ordering. See ``docs/slices/slice-e.md``
+    §6 gotcha #4.
+    """
+
+    src: str
+    macros: dict[str, str]
+    # Default color applied only to items RaTeX leaves in plain black;
+    # explicit ``\textcolor{...}`` colors ride through unchanged.
+    color: RgbaSrgb
+    # Multiplier on top of the Rust adapter's ``WORLD_UNITS_PER_EM``.
+    scale: float
+
+
+Object = Polyline | BezPath | Tex
 
 
 # ============================================================================
