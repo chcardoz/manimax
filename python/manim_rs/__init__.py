@@ -27,6 +27,7 @@ from manim_rs.animate import (
 from manim_rs.objects import (
     BezPath,
     Polyline,
+    Tex,
     close,
     cubic_to,
     line_to,
@@ -56,6 +57,7 @@ __all__ = [
     "SlowInto",
     "Smooth",
     "SquishRateFunc",
+    "Tex",
     "ThereAndBack",
     "ThereAndBackWithPause",
     "Translate",
