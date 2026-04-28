@@ -8,6 +8,7 @@ members = [
     "crates/manim-rs-runtime",
     "crates/manim-rs-py",
     "crates/manim-rs-text",
+    "crates/manim-rs-tex",
 ]
 
 [workspace.package]
@@ -25,6 +26,7 @@ manim-rs-raster = { path = "crates/manim-rs-raster" }
 manim-rs-encode = { path = "crates/manim-rs-encode" }
 manim-rs-runtime = { path = "crates/manim-rs-runtime" }
 manim-rs-text = { path = "crates/manim-rs-text" }
+manim-rs-tex = { path = "crates/manim-rs-tex" }
 
 # Text + glyph outlines (Slice E).
 # swash: shaping + glyph outlines. kurbo: BezPath used everywhere as the
@@ -36,6 +38,9 @@ kurbo = "0.11"
 # `main` because the project doesn't publish to crates.io and v0.1.x is young
 # (see ADR 0008). Bump deliberately and re-run the Tex coverage corpus.
 ratex-katex-fonts = { git = "https://github.com/erweixin/RaTeX", rev = "74831536501c37b37f8bedfcd82046657fe06277" }
+ratex-parser = { git = "https://github.com/erweixin/RaTeX", rev = "74831536501c37b37f8bedfcd82046657fe06277" }
+ratex-layout = { git = "https://github.com/erweixin/RaTeX", rev = "74831536501c37b37f8bedfcd82046657fe06277" }
+ratex-types = { git = "https://github.com/erweixin/RaTeX", rev = "74831536501c37b37f8bedfcd82046657fe06277" }
 
 # IR / serialization
 serde = { version = "1", features = ["derive"] }
