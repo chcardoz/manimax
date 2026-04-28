@@ -1,0 +1,12 @@
+[package]
+name = "manim-rs-text"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+repository.workspace = true
+
+[dependencies]
+swash = { workspace = true }
+kurbo = { workspace = true }
+ratex-katex-fonts = { workspace = true }
