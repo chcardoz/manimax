@@ -32,7 +32,7 @@ fn encode_30_solid_frames() {
         .collect();
 
     for _ in 0..FRAMES {
-        enc.push_frame(&frame).expect("push_frame");
+        enc.push_frame(frame.clone()).expect("push_frame");
     }
     enc.finish().expect("finish ffmpeg");
 
@@ -64,7 +64,7 @@ fn frame_size_mismatch_is_caught() {
     let path = output_path();
     let mut enc = Encoder::start(&path, WIDTH, HEIGHT, FPS).expect("start");
     let bad = vec![0u8; 100];
-    let err = enc.push_frame(&bad).expect_err("should have rejected");
+    let err = enc.push_frame(bad).expect_err("should have rejected");
     assert!(err.to_string().contains("mismatch"));
     // Drop kills the child; test passes whether or not finish is called.
 }
@@ -87,7 +87,7 @@ fn dropped_encoder_releases_resources() {
             .cycle()
             .take((WIDTH * HEIGHT * 4) as usize)
             .collect();
-        enc.push_frame(&frame).expect("push #1");
+        enc.push_frame(frame).expect("push #1");
         // Drop without calling finish().
     }
 
@@ -101,7 +101,7 @@ fn dropped_encoder_releases_resources() {
         .take((WIDTH * HEIGHT * 4) as usize)
         .collect();
     for _ in 0..3 {
-        enc2.push_frame(&frame).expect("push #2");
+        enc2.push_frame(frame.clone()).expect("push #2");
     }
     enc2.finish().expect("finish #2");
     assert!(p.exists(), "mp4 not written after reuse");
@@ -126,7 +126,7 @@ fn solid_color_survives_yuv420p_roundtrip() {
         .take((WIDTH * HEIGHT * 4) as usize)
         .collect();
     for _ in 0..5 {
-        enc.push_frame(&frame).expect("push");
+        enc.push_frame(frame.clone()).expect("push");
     }
     enc.finish().expect("finish");
 

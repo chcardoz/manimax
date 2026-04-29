@@ -8,3 +8,5 @@ repository.workspace = true
 
 [dependencies]
 thiserror = { workspace = true }
+tracing = { workspace = true }
+ffmpeg-the-third = { workspace = true }

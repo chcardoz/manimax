@@ -72,6 +72,19 @@ pollster = "0.4"
 # PNG I/O for raster examples and eyeball tests.
 png = "0.17"
 
+# In-process h264 encoder + mp4 muxer (libavcodec/libavformat/libavutil/libswscale
+# bindings). Replaces the previous `Command::spawn("ffmpeg")` subprocess so the
+# encoder doesn't pay a 631 ms `wait()` tail at 4K nor pipe 33 MB/frame through
+# stdin. Requires system ffmpeg dev libs at build time (Homebrew on macOS,
+# `libav*-dev` on Debian/Ubuntu). LGPL via dynamic linking — do not enable
+# static linking without checking the GPL implications.
+#
+# Using `ffmpeg-the-third` (a maintained fork) instead of `ffmpeg-next` because
+# `ffmpeg-next` 7.x is pinned to ffmpeg ≤ 7.1 (its bindgen step looks for
+# `avfft.h`, removed in ffmpeg 8). Homebrew ffmpeg is at 8.x; the fork's
+# 5.0+ffmpeg-8.1 release tracks it.
+ffmpeg-the-third = "5"
+
 # Hashing — blake3 for the render-side snapshot cache key.
 blake3 = "1"
 

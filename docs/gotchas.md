@@ -163,31 +163,25 @@ Pixel-check tests that assert "bright pixels exist somewhere in frame 0" need a 
 
 If you need to test that the *renderer* output survives, split the test: one hits `Runtime::render` directly (no encoder), one hits `render_to_mp4` with a beefier stroke.
 
-### ffmpeg stderr must be drained during encode, not just at finish
+### ffmpeg stderr must be drained during encode (fixed 2026-04-28)
 
-`crates/manim-rs-encode/src/lib.rs` captures ffmpeg's stderr into a pipe but
-only reads it *after* `wait()` on encoder finish. For short renders this is
-fine — stderr stays well under the kernel pipe buffer (64 KiB on Linux,
-smaller on macOS). For long renders with chatty ffmpeg output (the
-occasional libx264 warning leaks through even at `-loglevel error`), the
-pipe can fill, at which point:
+Historical note: `crates/manim-rs-encode/src/lib.rs` originally captured
+ffmpeg's stderr into a pipe and only read it after `wait()` on encoder
+finish. For long renders with chatty libx264 output (warnings leak
+through even at `-loglevel error`), the kernel pipe could fill, blocking
+ffmpeg on `write(stderr)`, which stalls stdin → stalls our `push_frame`
+write → deadlock. Latent at the time the entry was written, never
+observed because tests + `-loglevel error` kept stderr small.
 
-1. ffmpeg blocks on its next `write(stderr)`.
-2. Our `push_frame` writes to stdin; ffmpeg can't drain stdin while blocked on stderr.
-3. Our write blocks.
-4. Deadlock.
+**Fix shipped (perf.md N14):** `Encoder::start` spawns a background
+thread that line-reads stderr into a 64 KiB-capped `Arc<Mutex<String>>`.
+`finish` joins after `wait()`; `Drop` joins on abnormal shutdown.
+`NonZeroExit.stderr` reads the captured buffer rather than the pipe
+post-hoc. Deadlock shape no longer reachable.
 
-Not observed yet (short renders + `-loglevel error` keep stderr quiet), but
-the shape is latent and will bite once renders run for minutes.
-
-**Fix direction:** spawn a stderr-drain thread in `Encoder::start` that
-reads + discards (or keeps a ring buffer for error diagnostics). See
-`docs/performance.md` N14 — pairs with O11 (progress output), since both
-want a reader on one of the encoder's pipes.
-
-Testing note: the current `tests/python/test_render_to_mp4.py` and
-`crates/manim-rs-runtime/tests/end_to_end.rs` run short (≤ 2 s of video),
-so they would not surface this deadlock.
+Kept here as institutional memory: any future encoder pipe (e.g.
+`-progress pipe:` for ffmpeg-native progress) needs the same drain
+discipline.
 
 ### Pixel-exact snapshot constants are platform-pinned
 
