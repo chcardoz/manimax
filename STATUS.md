@@ -1,52 +1,56 @@
 # Status
 
-**Last updated:** 2026-04-24
-**Current slice:** Slice D — **shipped**. Plan at `docs/slices/slice-d.md`
-(§11 retrospective). ADR at `docs/decisions/0006-slice-d-decisions.md`.
-Slice E not yet scoped.
+**Last updated:** 2026-04-28
+**Current slice:** Slice E — Steps 1–5 shipped, Steps 6–9 remaining.
+Plan: `docs/slices/slice-e.md`. ADRs through `0008`. Slice D shipped.
 
 ## Last session did
 
-Post-Slice-D cleanup and CI hardening on branch
-`chcardoz/review-current-diff` (PR #5):
+Slice E Step 5 (Python `Tex` mobject + macro pre-expansion +
+`tex_validate`), plus a mid-slice detour adding the single-frame
+render API (`render_frame_to_png` / `render_frame` / `frame` CLI
+subcommand), plus two visual fixes (lyon `FILL_TOLERANCE = 0.001`
+and swash `OUTLINE_PPEM = 1024`). Closed with a `/simplify` review
+that landed eight surgical fixes (compile_tex error chain, font
+cache race, GIL during tex_validate, cache-key narrowing, CLI
+dedup, etc.).
 
-- **Module splits (pure refactor, logic byte-identical):**
-  - `crates/manim-rs-eval/src/lib.rs` split into `state`, `evaluator`,
-    `tracks`, `lerp`, `easing` (commit `1824ad5`).
-  - `crates/manim-rs-raster/src/lib.rs` extracted `render_object` and
-    `pipe_bundle` modules (commit `fd5d142`).
-  - `///` doc comments added to public items across encode / ir /
-    runtime / raster helpers (commit `c488cde`).
-- **CI:** new `.github/workflows/ci.yml` — `ubuntu-latest` +
-  `WGPU_BACKEND=vulkan` + mesa-vulkan-drivers (lavapipe). Skips the
-  `reference/manimgl` submodule; excludes `manim-rs-py` from
-  `cargo test` (same as local invocation). Decision recorded in
-  `docs/decisions/0007-ci-linux-lavapipe.md`.
-- **Shared test fixtures:**
-  - Python: `tests/python/conftest.py::canonical_square_scene` now
-    backs `test_eval_at.py` and `test_render_to_mp4.py`. Pixel
-    assertions vectorized via numpy.
-  - Rust: `crates/manim-rs-runtime/tests/common/mod.rs::short_slice_b_scene`
-    shared across `end_to_end.rs` and `cache_behaviour.rs`.
-- **Docs:** `docs/performance.md` N15 — warm-cache speedup is ~40% on
-  1080p60 long renders (commit `8e98109`). Added a longer multi-act
-  `showcase_scene` fixture (commit `d062df6`). Updated
-  `docs/gotchas.md` pointers that the eval split invalidated.
-- Dropped `test_every_easing_roundtrips_through_rust`; coverage is
-  preserved by `test_scene_roundtrips_through_rust` via `_wide_scene`,
-  which distributes all 15 easing variants across track types.
+Full session details in:
+
+- `docs/decisions/0008-slice-e-decisions.md` — design decisions A–F.
+- `docs/slices/slice-e.md` §11 — retrospective, including the
+  /simplify cleanup pass bug-class breakdown.
+- `docs/gotchas.md` — two new entries (low-ppem hinting, lyon
+  default tolerance).
+- `docs/performance.md` — Slice E observations E1–E3, plus E3a/b/c
+  (PyRuntime PyClass, tracing instrumentation, error-chain at the
+  pyo3 boundary).
+- `docs/future-directions.md` — new file: architectural
+  watchpoints with concrete triggers.
+
+`cargo test --workspace` and `pytest tests/python` (111 tests)
+green.
 
 ## Next action
 
-Scope Slice E. Per `slice-d.md` §9 the natural sequence is text
-(cosmic-text + swash) / TeX. Before writing the slice plan:
+**Slice E Step 6** — Tex coverage corpus + snapshot pinning.
+Pinned LaTeX expressions exercising fractions, Greek + AMS
+symbols, `\textcolor`, every KaTeX font face. Per-entry
+single-frame render + tolerance snapshot. Plan: `slice-e.md` §3
+Step 6.
 
-1. Re-read `docs/architecture.md` §2–§5.
-2. Skim `reference/manimgl/manimlib/mobject/{svg,tex,text}/` and
-   `manimlib/utils/tex_file_writing.py` for what manimgl's text
-   pipeline assumes.
-3. Write `docs/slices/slice-e.md` — scope lock first, per Slice D §11
-   retro (scope lock is what made D ship cleanly).
+Pre-Step-6 prep:
+
+1. Pick tolerance type (per-pixel max, mean delta, or SSIM) and
+   confirm stable across two warm runs.
+2. Decide baseline storage strategy
+   (`UPDATE_TEX_SNAPSHOTS=1`-style regen flag preferred over
+   git-tracked image bytes).
+3. Re-skim `docs/gotchas.md` for the two Slice E entries before
+   diagnosing any visual artifact.
+
+Working rhythm: one step at a time, rewrite STATUS.md at
+end-of-session.
 
 ## Blockers
 

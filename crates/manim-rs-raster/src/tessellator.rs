@@ -489,9 +489,18 @@ pub fn tessellate_bezpath_fill(verbs: &[PathVerb]) -> FillMesh {
     tessellate_fill_path(&path)
 }
 
+/// Curve-flattening tolerance for fill tessellation, in world units. lyon's
+/// `FillOptions::DEFAULT` is 0.25, which is wildly too coarse at our scale —
+/// `WORLD_UNITS_PER_EM = 1.0` means a glyph spans ~1 world unit, so 0.25
+/// turns each cubic into ~4 line segments and leaves visible polygon-corner
+/// "hooks" at curve terminals (Tex glyphs especially). 0.001 (1/1000 em) is
+/// well below a pixel at any reasonable render resolution and produces clean
+/// outlines. Polylines pay nothing for this since they're already linear.
+const FILL_TOLERANCE: f32 = 0.001;
+
 fn tessellate_fill_path(path: &Path) -> FillMesh {
     let mut buffers: VertexBuffers<FillVertex, u32> = VertexBuffers::new();
-    let opts = FillOptions::DEFAULT.with_fill_rule(FillRule::NonZero);
+    let opts = FillOptions::tolerance(FILL_TOLERANCE).with_fill_rule(FillRule::NonZero);
     let mut tess = FillTessellator::new();
     tess.tessellate_path(
         path,

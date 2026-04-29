@@ -3,7 +3,7 @@
 //! evaluates it at any `t`.
 
 use std::collections::{HashMap, HashSet};
-use std::sync::Arc;
+use std::sync::{Arc, Mutex};
 
 use manim_rs_ir::{
     ColorSegment, Object, ObjectId, OpacitySegment, PositionSegment, RgbaSrgb, RotationSegment,
@@ -13,13 +13,23 @@ use manim_rs_ir::{
 use crate::easing::apply_easing;
 use crate::lerp::Lerp;
 use crate::state::{ObjectState, SceneState};
+use crate::tex::compile_tex;
 use crate::tracks::{Segment, evaluate_track, segment_alpha};
+
+/// Compiled Tex children indexed by `blake3(canonical_serde(Object::Tex))`.
+/// Each entry is the Step 3 `compile_tex` output with its `Object`s pre-Arc'd
+/// so per-frame fan-out only does ref-count bumps.
+type TexCache = Arc<Mutex<HashMap<blake3::Hash, Arc<Vec<Arc<Object>>>>>>;
 
 /// Runtime-friendly evaluator state compiled once from an authored `Scene`.
 #[derive(Debug, Clone, Default)]
 pub struct Evaluator {
     timeline: Vec<CompiledTimelineOp>,
     tracks: HashMap<ObjectId, TrackBundle>,
+    /// Per-Evaluator cache of compiled Tex outputs. Keyed by content hash so
+    /// two scenes with the same Tex source share entries; carried across
+    /// frames so a Tex that lives for N frames compiles once.
+    tex_cache: TexCache,
 }
 
 #[derive(Debug, Clone)]
@@ -76,7 +86,49 @@ impl Evaluator {
         Self {
             timeline,
             tracks: index_tracks(tracks),
+            tex_cache: TexCache::default(),
         }
+    }
+
+    /// Look up (or compile and insert) the BezPath children for a Tex IR
+    /// node. Returns each child wrapped in `Arc<Object>` so the fan-out at
+    /// `eval_at` can hand them straight to `ObjectState` without cloning
+    /// the underlying verb buffers.
+    fn compile_tex_cached(&self, src: &str, color: RgbaSrgb) -> Arc<Vec<Arc<Object>>> {
+        // Cache key intentionally excludes `scale` (not baked into
+        // geometry — applied at fan-out) and `macros` (Python pre-expands;
+        // IR ships `{}`). Two Tex calls with same src+color but different
+        // scale share one entry. blake3 over a tiny canonical struct.
+        let key = {
+            let mut hasher = blake3::Hasher::new();
+            hasher.update(src.as_bytes());
+            for c in color {
+                hasher.update(&c.to_le_bytes());
+            }
+            hasher.finalize()
+        };
+
+        if let Some(hit) = self.tex_cache.lock().unwrap().get(&key).cloned() {
+            return hit;
+        }
+
+        // `compile_tex` should never fail here: the Python `Tex(...)`
+        // constructor (Slice E Step 5) calls `tex_validate` before IR
+        // emission. Direct Rust callers (e.g. integration tests) are
+        // expected to pass valid sources or accept the panic.
+        let compiled: Vec<Arc<Object>> = compile_tex(src, color)
+            .expect("compile_tex on validated source")
+            .into_iter()
+            .map(Arc::new)
+            .collect();
+        let arc = Arc::new(compiled);
+
+        let mut cache = self.tex_cache.lock().unwrap();
+        // Re-check under the lock so a parallel miss doesn't leak a second
+        // copy into the cache. Two threads can still both run compile_tex
+        // before reaching here; the loser's result is dropped. Acceptable
+        // until the renderer goes parallel.
+        Arc::clone(cache.entry(key).or_insert(arc))
     }
 
     /// Convenience for one-off callers that only have `&Scene`.
@@ -85,19 +137,48 @@ impl Evaluator {
     }
 
     /// Evaluate the compiled scene at absolute time `t`.
+    ///
+    /// Tex fan-out (Slice E Step 4): an active `Object::Tex` is replaced
+    /// with N `ObjectState`s — one per glyph/decoration BezPath — that
+    /// share the parent's resolved transforms (position / rotation /
+    /// opacity / color_override) and **multiply** the parent's
+    /// track-resolved `scale` by the IR's `Tex.scale`. The rasterizer
+    /// therefore never sees `Object::Tex`.
     pub fn eval_at(&self, t: Time) -> SceneState {
         let mut objects = Vec::new();
         for (id, object) in active_objects_at(&self.timeline, t) {
             let bundle = self.tracks.get(&id);
-            objects.push(ObjectState {
+            let position = bundle.map_or([0.0; 3], |b| sum_segments(&b.position, t));
+            let opacity = bundle.map_or(1.0, |b| product_scalars(&b.opacity, t));
+            let rotation = bundle.map_or(0.0, |b| sum_scalars(&b.rotation, t));
+            let scale = bundle.map_or(1.0, |b| product_scalars(&b.scale, t));
+            let color_override = bundle.and_then(|b| latest_segments(&b.color, t));
+
+            let make_state = |obj: Arc<Object>, scale: f32| ObjectState {
                 id,
-                object: Arc::clone(object),
-                position: bundle.map_or([0.0; 3], |b| sum_segments(&b.position, t)),
-                opacity: bundle.map_or(1.0, |b| product_scalars(&b.opacity, t)),
-                rotation: bundle.map_or(0.0, |b| sum_scalars(&b.rotation, t)),
-                scale: bundle.map_or(1.0, |b| product_scalars(&b.scale, t)),
-                color_override: bundle.and_then(|b| latest_segments(&b.color, t)),
-            });
+                object: obj,
+                position,
+                opacity,
+                rotation,
+                scale,
+                color_override,
+            };
+
+            if let Object::Tex {
+                src,
+                color,
+                scale: tex_scale,
+                ..
+            } = &**object
+            {
+                let children = self.compile_tex_cached(src, *color);
+                let combined_scale = scale * *tex_scale;
+                for child in children.iter() {
+                    objects.push(make_state(Arc::clone(child), combined_scale));
+                }
+            } else {
+                objects.push(make_state(Arc::clone(object), scale));
+            }
         }
         SceneState { objects }
     }

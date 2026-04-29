@@ -1,0 +1,15 @@
+[package]
+name = "manim-rs-tex"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+repository.workspace = true
+
+[dependencies]
+manim-rs-text = { workspace = true }
+ratex-parser = { workspace = true }
+ratex-layout = { workspace = true }
+ratex-types = { workspace = true }
+kurbo = { workspace = true }
+thiserror = { workspace = true }

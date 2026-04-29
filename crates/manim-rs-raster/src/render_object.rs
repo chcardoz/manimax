@@ -54,6 +54,14 @@ pub(crate) fn tessellate_object(state: &ObjectState) -> ObjectDraw {
             stroke.as_ref().map(|_| sample_bezpath(verbs)),
             stroke.as_ref(),
         ),
+        // Slice E Step 4: the evaluator fans `Object::Tex` into N
+        // `Object::BezPath` `ObjectState`s before this function runs, so
+        // a Tex node here means a code path skipped fan-out — a bug, not
+        // a missing feature. Panic loudly so it surfaces in tests rather
+        // than rendering a silent blank frame.
+        Object::Tex { .. } => {
+            unreachable!("Object::Tex must be expanded by Evaluator::eval_at before tessellation")
+        }
     };
 
     let fill = fill_raw.and_then(|(mesh, color)| {

@@ -13,12 +13,13 @@ from __future__ import annotations
 from manim_rs import ir
 from manim_rs.animate.transforms import Animation
 from manim_rs.objects.geometry import BezPath, Polyline
+from manim_rs.objects.tex import Tex
 
 _DEFAULT_FPS = 30
 _DEFAULT_RESOLUTION = ir.Resolution(width=480, height=270)
 _DEFAULT_BACKGROUND: ir.RgbaSrgb = (0.0, 0.0, 0.0, 1.0)
 
-AnyObject = Polyline | BezPath
+AnyObject = Polyline | BezPath | Tex
 
 # Track classes, in the order we emit them from ``.ir``. Iteration order drives
 # the output `Scene.tracks` ordering; used for deterministic serialization.

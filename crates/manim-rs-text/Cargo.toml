@@ -1,5 +1,5 @@
 [package]
-name = "manim-rs-eval"
+name = "manim-rs-text"
 version.workspace = true
 edition.workspace = true
 rust-version.workspace = true
@@ -7,9 +7,6 @@ license.workspace = true
 repository.workspace = true
 
 [dependencies]
-manim-rs-ir = { workspace = true }
-manim-rs-tex = { workspace = true }
+swash = { workspace = true }
 kurbo = { workspace = true }
-serde = { workspace = true }
-serde_json = { workspace = true }
-blake3 = { workspace = true }
+ratex-katex-fonts = { workspace = true }

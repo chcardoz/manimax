@@ -12,7 +12,8 @@ use std::path::PathBuf;
 
 use manim_rs_eval::{Evaluator, SceneState};
 use manim_rs_ir::Scene;
-use manim_rs_runtime::{CacheStats, FrameCache, render_to_mp4_with_cache};
+use manim_rs_runtime::{CacheStats, FrameCache, render_frame_to_png, render_to_mp4_with_cache};
+use manim_rs_tex::tex_to_display_list;
 use pyo3::exceptions::{PyRuntimeError, PyValueError};
 use pyo3::prelude::*;
 use pyo3::types::PyDict;
@@ -100,11 +101,41 @@ fn eval_at(py: Python<'_>, ir: &Bound<'_, PyAny>, t: f64) -> PyResult<PyObject> 
     Ok(obj.into())
 }
 
+/// Render a single frame at time `t` to a PNG at `out`. Skips the ffmpeg
+/// encoder — eval + raster + PNG. Useful for snapshot inspection and
+/// per-frame baselines (Slice E Step 6).
+#[pyfunction]
+fn render_frame(py: Python<'_>, ir: &Bound<'_, PyAny>, out: &str, t: f64) -> PyResult<()> {
+    let scene = depythonize_scene(ir)?;
+    let out_path = PathBuf::from(out);
+    py.allow_threads(move || render_frame_to_png(scene, &out_path, t))
+        .map_err(|e| PyRuntimeError::new_err(format!("render_frame failed: {e}")))?;
+    Ok(())
+}
+
+/// Parse `src` as Tex source and return on success, raising `ValueError`
+/// with the parse error message on failure. Slice E Step 5 entry point —
+/// lets `Tex(...)` constructors fail loudly at author time rather than
+/// silently rendering a blank frame at render time. Cheaper than a full
+/// `compile_tex` round trip: stops at `tex_to_display_list`, which runs
+/// parse + layout but not the kurbo BezPath conversion.
+#[pyfunction]
+fn tex_validate(py: Python<'_>, src: &str) -> PyResult<()> {
+    // Copy out of the &str (which borrows from a Python string and so
+    // requires the GIL) before releasing it. Parse+layout itself touches
+    // no Python state.
+    let owned = src.to_owned();
+    py.allow_threads(|| tex_to_display_list(&owned).map(|_| ()))
+        .map_err(|e| PyValueError::new_err(format!("invalid Tex source: {e}")))
+}
+
 #[pymodule]
 fn _rust(m: &Bound<'_, PyModule>) -> PyResult<()> {
     m.add_function(wrap_pyfunction!(__build_probe, m)?)?;
     m.add_function(wrap_pyfunction!(roundtrip_ir, m)?)?;
     m.add_function(wrap_pyfunction!(render_to_mp4, m)?)?;
     m.add_function(wrap_pyfunction!(eval_at, m)?)?;
+    m.add_function(wrap_pyfunction!(tex_validate, m)?)?;
+    m.add_function(wrap_pyfunction!(render_frame, m)?)?;
     Ok(())
 }

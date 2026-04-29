@@ -9,10 +9,12 @@ from manim_rs.objects.geometry import (
     move_to,
     quad_to,
 )
+from manim_rs.objects.tex import Tex
 
 __all__ = [
     "BezPath",
     "Polyline",
+    "Tex",
     "close",
     "cubic_to",
     "line_to",

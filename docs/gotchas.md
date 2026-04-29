@@ -233,6 +233,31 @@ This is the bug a re-implementer is most likely to re-introduce.
 
 ---
 
+## Text / fonts / glyph outlines
+
+### swash hinting at low ppem produces stair-stepped outlines that explode under scale-up
+
+swash applies TrueType hinting when the requested ppem is small.
+Manimax uses "1 em = 1 world unit," so the natural ask is `ppem ≈ 1.0` — small enough that hinting snaps every control point to the integer pixel grid. The outline is correct at ppem≈1 but scales catastrophically: `Tex.scale=8` (or any zoomed camera) turns the snapped points into visible staircase scallops on every curve.
+
+Fix: extract at a high internal ppem and scale down via affine. `crates/manim-rs-text/src/glyph.rs` pins `OUTLINE_PPEM = 1024` and post-multiplies the BezPath by `Affine::scale(scale / 1024)`. The 1024 value is effectively hinting-off; smooth at every downstream scale we tested (0.25 to 8).
+
+Symptom that surfaces this: the path is geometrically right (closed contours, correct winding, fills the right region) but every curve is faceted and the facets get bigger as you zoom in. If you only see this at one zoom level, suspect lyon flatness instead (see next entry).
+
+Caught by visual inspection during Slice E Step 5, not by any test in the corpus. Tests that *would* catch it: pin `bbox` to a value derived from the curve (not just non-degenerate), or do a raster-snapshot at `Tex.scale=4+`.
+
+### lyon `FillOptions::DEFAULT.tolerance` (0.25) is wildly too coarse for em-scaled geometry
+
+`FillOptions::default()` ships with `tolerance = 0.25`, a budget calibrated for SVGs in *pixel* coordinates. Glyph outlines (and any Tex-derived geometry) arrive in *em*-scaled world units where 1 em ≈ 1 world unit. A 0.25 budget on em-scaled curves flattens an `o` into an octagon.
+
+Fix: `crates/manim-rs-raster/src/tessellator.rs` pins `FILL_TOLERANCE = 0.001` (1‰ of an em). Empirically smooth across the scales tested in Slice E.
+
+Trade-off: tessellation cost scales with `1 / sqrt(tolerance)`, so 0.25→0.001 is ~16× more curve segments per glyph. Hasn't bitten yet but logged in `docs/performance.md` as a future per-Object knob.
+
+If you see "geometric octagons, identical at every zoom level" → flatness tolerance. If you see "stair-stepping that gets coarser as you zoom in" → swash hinting (previous entry). They look superficially similar at one resolution and you can have both at once.
+
+---
+
 ## Cultural
 
 ### Pick "match manimgl" over "what's technically correct" by default

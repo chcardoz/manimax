@@ -8,12 +8,23 @@ repository.workspace = true
 
 [lib]
 name = "_rust"
-crate-type = ["cdylib"]
+# `rlib` so `cargo test --workspace` can link this crate normally.
+# `cdylib` is what maturin actually ships to Python.
+crate-type = ["cdylib", "rlib"]
+
+[features]
+default = []
+# Enabled by maturin (see pyproject.toml). When on, pyo3 stops linking to
+# libpython and emits the macOS `-undefined dynamic_lookup` flag — which
+# is what makes the .so loadable by CPython but unbuildable by plain
+# `cargo build`. Hence: opt-in only.
+extension-module = ["pyo3/extension-module"]
 
 [dependencies]
 manim-rs-ir = { workspace = true }
 manim-rs-runtime = { workspace = true }
 manim-rs-eval = { workspace = true }
+manim-rs-tex = { workspace = true }
 manim-rs-raster = { workspace = true }
 manim-rs-encode = { workspace = true }
 pyo3 = { workspace = true }
