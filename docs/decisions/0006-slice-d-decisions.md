@@ -1,7 +1,9 @@
 # 0006 — Slice D consolidated decisions
 
 **Date:** 2026-04-23
-**Status:** accepted
+**Status:** partially superseded by 0009 (sections C–F: pixel cache).
+Sections A (real stroke port) and B (cubic→quadratic split) remain
+accepted.
 
 One ADR covering the design calls that defined Slice D. Continues the
 single-consolidated-ADR-per-slice cadence established by 0004 and

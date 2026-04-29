@@ -15,6 +15,7 @@ pollster = { workspace = true }
 thiserror = { workspace = true }
 manim-rs-ir = { workspace = true }
 manim-rs-eval = { workspace = true }
+tracing = { workspace = true }
 
 [dev-dependencies]
 png = { workspace = true }

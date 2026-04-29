@@ -123,6 +123,7 @@ impl Runtime {
     /// Stand up the wgpu device and pipelines for a `width × height` target.
     /// One-time cost is hundreds of milliseconds; reuse the same `Runtime`
     /// across all frames of a render.
+    #[tracing::instrument(name = "raster::Runtime::new", skip_all, fields(width, height))]
     pub fn new(width: u32, height: u32) -> Result<Self, RuntimeError> {
         assert!(width > 0 && height > 0, "runtime needs non-zero dimensions");
 
@@ -264,6 +265,11 @@ impl Runtime {
     /// before all submitted command buffers. Submitting after each object
     /// forces the writes to interleave with the passes as authored. See
     /// `docs/gotchas.md`.
+    #[tracing::instrument(
+        name = "raster::render",
+        skip_all,
+        fields(objects = state.objects.len()),
+    )]
     pub fn render(
         &self,
         state: &SceneState,
@@ -436,6 +442,7 @@ impl Runtime {
         Ok(())
     }
 
+    #[tracing::instrument(name = "readback", skip_all)]
     fn readback_pixels(&self) -> Result<Vec<u8>, RuntimeError> {
         let slice = self.readback.slice(..);
         let (tx, rx) = std::sync::mpsc::channel();

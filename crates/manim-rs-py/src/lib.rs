@@ -8,21 +8,102 @@
 //! `roundtrip_ir` retains its JSON-string signature: it is a schema drift
 //! guard, independent of the runtime FFI path.
 
+use std::fs::OpenOptions;
 use std::path::PathBuf;
+use std::sync::OnceLock;
 
 use manim_rs_eval::{Evaluator, SceneState};
 use manim_rs_ir::Scene;
-use manim_rs_runtime::{CacheStats, FrameCache, render_frame_to_png, render_to_mp4_with_cache};
+use manim_rs_runtime::{
+    EncoderOptions, RenderOptions, RuntimeError, render_frame_to_png, render_to_mp4_with_options,
+};
 use manim_rs_tex::tex_to_display_list;
 use pyo3::exceptions::{PyRuntimeError, PyValueError};
 use pyo3::prelude::*;
-use pyo3::types::PyDict;
 use pythonize::{depythonize, pythonize};
+use tracing_subscriber::EnvFilter;
+use tracing_subscriber::fmt::writer::BoxMakeWriter;
 
 /// Minimal build-probe so the module always has something trivially importable.
 #[pyfunction]
 fn __build_probe() -> &'static str {
     "manim_rs._rust: slice-c step 1"
+}
+
+/// Tracking flag for `install_trace_json`. The global default subscriber can
+/// only be set once per process; subsequent calls are silent no-ops.
+static TRACE_INSTALLED: OnceLock<()> = OnceLock::new();
+
+/// Convert a `RuntimeError` into a `PyErr` that preserves the full
+/// `std::error::Error::source` chain via Python's `__cause__`. Replaces
+/// the previous `format!("...: {e}")` flattening so users see e.g.
+/// `RuntimeError: encoder failed: ... → FileNotFoundError: ffmpeg` instead
+/// of a single string with the inner io::Error swallowed.
+///
+/// Orphan rules forbid `impl From<RuntimeError> for PyErr` directly (both
+/// types live outside this crate), so this is the explicit-call form.
+fn runtime_err_to_pyerr(err: RuntimeError) -> PyErr {
+    // Collect the chain top-down: outermost message first, root cause last.
+    let mut messages: Vec<String> = vec![err.to_string()];
+    let mut src: Option<&dyn std::error::Error> = std::error::Error::source(&err);
+    while let Some(e) = src {
+        messages.push(e.to_string());
+        src = e.source();
+    }
+
+    Python::with_gil(|py| {
+        // Build inside-out so `__cause__` points from outer → inner.
+        let mut iter = messages.into_iter().rev();
+        let root_msg = iter
+            .next()
+            .expect("messages is non-empty: pushed err first");
+        let mut current = PyRuntimeError::new_err(root_msg);
+        for msg in iter {
+            let parent = PyRuntimeError::new_err(msg);
+            parent.set_cause(py, Some(current));
+            current = parent;
+        }
+        current
+    })
+}
+
+/// Install a JSON `tracing` subscriber that writes per-stage spans (eval_at,
+/// raster::render, readback, encoder::push_frame, frame, render_to_mp4) to
+/// `path`, one JSON object per event.
+///
+/// Idempotent at the process level — only the first call wins. Filter level
+/// honors the `RUST_LOG` env var if set, otherwise defaults to `info`.
+///
+/// The output is the standard `tracing-subscriber` JSON format. Ingest with
+/// `jq`, or convert to chrome://tracing format with a small post-processor.
+#[pyfunction]
+fn install_trace_json(path: &str) -> PyResult<bool> {
+    if TRACE_INSTALLED.get().is_some() {
+        return Ok(false);
+    }
+
+    let file = OpenOptions::new()
+        .create(true)
+        .write(true)
+        .truncate(true)
+        .open(path)
+        .map_err(|e| PyRuntimeError::new_err(format!("trace file open failed: {e}")))?;
+
+    let writer = BoxMakeWriter::new(std::sync::Mutex::new(file));
+    let filter = EnvFilter::try_from_default_env().unwrap_or_else(|_| EnvFilter::new("info"));
+
+    let installed = tracing_subscriber::fmt()
+        .json()
+        .with_env_filter(filter)
+        .with_writer(writer)
+        .with_span_events(tracing_subscriber::fmt::format::FmtSpan::CLOSE)
+        .try_init()
+        .is_ok();
+
+    if installed {
+        TRACE_INSTALLED.set(()).ok();
+    }
+    Ok(installed)
 }
 
 /// Deserialize an IR JSON string into the Rust IR and reserialize it.
@@ -45,21 +126,18 @@ fn depythonize_scene(ir: &Bound<'_, PyAny>) -> PyResult<Scene> {
 /// `ir` is any Python value that pythonize can deserialize into a `Scene` —
 /// in practice, the dict produced by `msgspec.to_builtins(scene.ir)` on the
 /// Python side. `fps` overrides `metadata.fps` so the CLI can expose `--fps`
-/// without rewriting the Python scene. `cache_dir`, when set, points the
-/// frame cache at that directory; unset falls back to
-/// `FrameCache::open_default` (`$MANIM_RS_CACHE_DIR` or `.manim-rs-cache/`).
-/// Returns a dict with `hits`, `misses`, `write_errors` so callers (tests,
-/// perf logging) can observe what the cache did. The GIL is released for
-/// the duration of the render.
+/// without rewriting the Python scene. The GIL is released for the duration
+/// of the render.
 #[pyfunction]
-#[pyo3(signature = (ir, out, fps=None, cache_dir=None))]
+#[pyo3(signature = (ir, out, fps=None, crf=None, progress=None))]
 fn render_to_mp4(
     py: Python<'_>,
     ir: &Bound<'_, PyAny>,
     out: &str,
     fps: Option<u32>,
-    cache_dir: Option<&str>,
-) -> PyResult<PyObject> {
+    crf: Option<u8>,
+    progress: Option<Py<PyAny>>,
+) -> PyResult<()> {
     let mut scene = depythonize_scene(ir)?;
 
     if let Some(fps) = fps {
@@ -70,24 +148,28 @@ fn render_to_mp4(
     }
 
     let out_path = PathBuf::from(out);
-    let cache_dir = cache_dir.map(PathBuf::from);
-    let stats: CacheStats = py
-        .allow_threads(
-            move || -> Result<CacheStats, manim_rs_runtime::RuntimeError> {
-                let cache = match cache_dir {
-                    Some(dir) => FrameCache::open(dir)?,
-                    None => FrameCache::open_default()?,
-                };
-                render_to_mp4_with_cache(scene, &out_path, &cache)
-            },
-        )
-        .map_err(|e| PyRuntimeError::new_err(format!("render_to_mp4 failed: {e}")))?;
+    let render_options = RenderOptions {
+        encoder: EncoderOptions { crf },
+    };
+    py.allow_threads(move || -> Result<(), manim_rs_runtime::RuntimeError> {
+        // Wrap the optional Python callable into a closure the Rust runtime
+        // can drive. Each invocation re-acquires the GIL — cheap relative to
+        // per-frame render cost (~10–30 ms vs. microseconds), and only
+        // happens once per frame.
+        let mut cb = progress.map(|callable| {
+            move |idx: u32, total: u32| {
+                Python::with_gil(|py| {
+                    let _ = callable.call1(py, (idx, total));
+                });
+            }
+        });
+        let progress_ref: Option<manim_rs_runtime::ProgressFn<'_>> =
+            cb.as_mut().map(|f| f as manim_rs_runtime::ProgressFn<'_>);
+        render_to_mp4_with_options(scene, &out_path, &render_options, progress_ref)
+    })
+    .map_err(runtime_err_to_pyerr)?;
 
-    let d = PyDict::new(py);
-    d.set_item("hits", stats.hits)?;
-    d.set_item("misses", stats.misses)?;
-    d.set_item("write_errors", stats.write_errors)?;
-    Ok(d.into())
+    Ok(())
 }
 
 /// Evaluate the scene at time `t` and return a plain Python representation of
@@ -109,7 +191,7 @@ fn render_frame(py: Python<'_>, ir: &Bound<'_, PyAny>, out: &str, t: f64) -> PyR
     let scene = depythonize_scene(ir)?;
     let out_path = PathBuf::from(out);
     py.allow_threads(move || render_frame_to_png(scene, &out_path, t))
-        .map_err(|e| PyRuntimeError::new_err(format!("render_frame failed: {e}")))?;
+        .map_err(runtime_err_to_pyerr)?;
     Ok(())
 }
 
@@ -137,5 +219,6 @@ fn _rust(m: &Bound<'_, PyModule>) -> PyResult<()> {
     m.add_function(wrap_pyfunction!(eval_at, m)?)?;
     m.add_function(wrap_pyfunction!(tex_validate, m)?)?;
     m.add_function(wrap_pyfunction!(render_frame, m)?)?;
+    m.add_function(wrap_pyfunction!(install_trace_json, m)?)?;
     Ok(())
 }

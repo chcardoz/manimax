@@ -1,20 +1,17 @@
-//! Manimax runtime glue — orchestrates eval → raster → encode with a
-//! per-frame blake3-keyed snapshot cache.
+//! Manimax runtime glue — orchestrates eval → raster → encode.
 //!
 //! `render_to_mp4(scene, out)` reads metadata off the IR, stands up a wgpu
 //! `Runtime` and an ffmpeg `Encoder`, and for every frame:
 //!   1. Evaluates the IR at `t` → `SceneState`.
-//!   2. Hashes `(version, metadata, camera, state)` → 32-byte key.
-//!   3. Reads cached RGBA for that key if present; otherwise rasterizes and
-//!      writes the bytes atomically.
-//!   4. Feeds the RGBA into the encoder.
+//!   2. Rasterizes the state to RGBA.
+//!   3. Feeds the RGBA into the encoder.
 //!
-//! Re-renders of a scene that has only changed locally pay only for the
-//! frames whose evaluated state actually differs — other frames hash to the
-//! same key and skip the rasterizer entirely. See `cache.rs` for the
-//! invariants that keep the hash deterministic.
-
-pub mod cache;
+//! No on-disk pixel cache: the cold-render cost was dominated by
+//! disk-write of raw RGBA frames (`docs/performance.md` N16 / ADR 0009),
+//! and warm reruns were bottlenecked by the same pipe + readback work
+//! that a cold render does anyway. Cheaper artifact caches (Tex compile,
+//! glyph outlines) live inside their respective crates, keyed on the
+//! source they derive from rather than per-frame `SceneState`.
 
 use std::fs::File;
 use std::io::{self, BufWriter};
@@ -25,7 +22,7 @@ use manim_rs_eval::Evaluator;
 use manim_rs_ir::Scene;
 use manim_rs_raster::{Camera, Runtime, RuntimeError as RasterError};
 
-pub use cache::{CACHE_KEY_VERSION, CacheError, CacheStats, FrameCache};
+pub use manim_rs_encode::EncoderOptions;
 
 /// Anything that can go wrong while rendering a scene to disk.
 #[derive(Debug, thiserror::Error)]
@@ -34,8 +31,6 @@ pub enum RuntimeError {
     Raster(#[from] RasterError),
     #[error("encoder failed: {0}")]
     Encode(#[from] EncodeError),
-    #[error("cache: {0}")]
-    Cache(#[from] CacheError),
     #[error("png write failed: {0}")]
     Png(String),
     #[error("io: {0}")]
@@ -48,26 +43,55 @@ impl From<png::EncodingError> for RuntimeError {
     }
 }
 
-/// Convenience: render with the default cache location (`$MANIM_RS_CACHE_DIR`
-/// or `.manim-rs-cache/`). Discards stats.
-pub fn render_to_mp4(scene: Scene, out: &Path) -> Result<(), RuntimeError> {
-    let cache = FrameCache::open_default()?;
-    render_to_mp4_with_cache(scene, out, &cache).map(|_| ())
+/// Render config that flows from the CLI/Python boundary into the runtime.
+/// Currently just encoder knobs; future fields (camera overrides, MSAA
+/// sample count) belong here.
+#[derive(Debug, Default, Clone)]
+pub struct RenderOptions {
+    pub encoder: EncoderOptions,
 }
 
-/// Render a scene to an mp4 at `out`, routing every frame through `cache`.
-/// Returns the hit/miss counters so callers (tests, perf logging) can observe
-/// how much work the cache actually skipped.
-pub fn render_to_mp4_with_cache(
+/// Per-frame progress callback: `(frame_idx, total_frames)`. Called *after*
+/// the frame has been pushed to the encoder. `frame_idx` runs `0..total`.
+pub type ProgressFn<'a> = &'a mut dyn FnMut(u32, u32);
+
+/// Convenience: render with default options and no progress callback.
+pub fn render_to_mp4(scene: Scene, out: &Path) -> Result<(), RuntimeError> {
+    render_to_mp4_with_options(scene, out, &RenderOptions::default(), None)
+}
+
+/// Render a scene to an mp4 at `out`.
+///
+/// `progress`, when set, is invoked once per frame after the encoder push so
+/// callers can render a progress bar (`docs/performance.md` O11). Errors
+/// inside the callback do not propagate — the callback is fire-and-forget UI.
+#[tracing::instrument(
+    name = "render_to_mp4",
+    skip_all,
+    fields(
+        width = scene.metadata.resolution.width,
+        height = scene.metadata.resolution.height,
+        fps = scene.metadata.fps,
+        duration = scene.metadata.duration,
+    ),
+)]
+pub fn render_to_mp4_with_options(
     scene: Scene,
     out: &Path,
-    cache: &FrameCache,
-) -> Result<CacheStats, RuntimeError> {
+    options: &RenderOptions,
+    mut progress: Option<ProgressFn<'_>>,
+) -> Result<(), RuntimeError> {
     let meta = scene.metadata.clone();
     let total_frames = (f64::from(meta.fps) * meta.duration).round().max(0.0) as u32;
 
     let runtime = Runtime::new(meta.resolution.width, meta.resolution.height)?;
-    let mut encoder = Encoder::start(out, meta.resolution.width, meta.resolution.height, meta.fps)?;
+    let mut encoder = Encoder::start_with_options(
+        out,
+        meta.resolution.width,
+        meta.resolution.height,
+        meta.fps,
+        &options.encoder,
+    )?;
     let evaluator = Evaluator::new(scene);
 
     let camera = Camera::SLICE_B_DEFAULT;
@@ -77,37 +101,21 @@ pub fn render_to_mp4_with_cache(
         meta.background[2] as f64,
         meta.background[3] as f64,
     ];
-    let expected_frame_len =
-        (meta.resolution.width as usize) * (meta.resolution.height as usize) * 4;
-
-    let key_prefix = cache::key_hasher(&camera, &meta, CACHE_KEY_VERSION)?;
-    let mut stats = CacheStats::default();
 
     for frame_idx in 0..total_frames {
+        let _frame_span = tracing::info_span!("frame", idx = frame_idx).entered();
         let t = f64::from(frame_idx) / f64::from(meta.fps);
         let state = evaluator.eval_at(t);
+        let pixels = runtime.render(&state, &camera, background)?;
+        encoder.push_frame(pixels)?;
 
-        let key = cache::frame_key(&key_prefix, &state)?;
-        let pixels = match cache.get(&key, expected_frame_len) {
-            Some(bytes) => {
-                stats.hits += 1;
-                bytes
-            }
-            None => {
-                stats.misses += 1;
-                let rendered = runtime.render(&state, &camera, background)?;
-                // A failed write is non-fatal — the next run just misses again.
-                if cache.put(&key, &rendered).is_err() {
-                    stats.write_errors += 1;
-                }
-                rendered
-            }
-        };
-        encoder.push_frame(&pixels)?;
+        if let Some(cb) = progress.as_mut() {
+            cb(frame_idx, total_frames);
+        }
     }
 
     encoder.finish()?;
-    Ok(stats)
+    Ok(())
 }
 
 /// Render a single frame at time `t` and write it as a PNG at `out`.
@@ -140,6 +148,7 @@ pub fn render_frame_to_png(scene: Scene, out: &Path, t: f64) -> Result<(), Runti
 }
 
 fn write_rgba_png(path: &Path, width: u32, height: u32, rgba: &[u8]) -> Result<(), RuntimeError> {
+    let _span = tracing::info_span!("png::write_rgba", width, height, bytes = rgba.len()).entered();
     let file = File::create(path)?;
     let w = BufWriter::new(file);
     let mut encoder = png::Encoder::new(w, width, height);

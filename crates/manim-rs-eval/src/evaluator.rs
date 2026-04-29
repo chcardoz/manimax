@@ -144,6 +144,7 @@ impl Evaluator {
     /// opacity / color_override) and **multiply** the parent's
     /// track-resolved `scale` by the IR's `Tex.scale`. The rasterizer
     /// therefore never sees `Object::Tex`.
+    #[tracing::instrument(name = "eval_at", skip_all, fields(t = t))]
     pub fn eval_at(&self, t: Time) -> SceneState {
         let mut objects = Vec::new();
         for (id, object) in active_objects_at(&self.timeline, t) {

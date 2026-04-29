@@ -78,6 +78,12 @@ blake3 = "1"
 # Temp-file handling for atomic cache writes.
 tempfile = "3"
 
+# Per-stage instrumentation (perf.md N9). Spans live in eval/raster/encode/
+# runtime; the subscriber that emits them lives in manim-rs-py and is
+# wired up from Python via `_rust.install_trace_json(path)`.
+tracing = "0.1"
+tracing-subscriber = { version = "0.3", features = ["json", "env-filter"] }
+
 [profile.release]
 lto = "thin"
 codegen-units = 1
