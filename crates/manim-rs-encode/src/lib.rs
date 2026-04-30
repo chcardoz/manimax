@@ -35,17 +35,40 @@ use ffmpeg::frame::Video;
 use ffmpeg::software::scaling::{Context as Scaler, Flags as ScalerFlags};
 use ffmpeg_the_third as ffmpeg;
 
+/// Which h264 encoder backend to use.
+///
+/// `Software` calls into libx264 (CPU encoding). `Hardware` requests the
+/// platform's hardware h264 encoder via libavcodec — currently
+/// `h264_videotoolbox` on macOS. If the requested backend isn't available
+/// in the linked libavcodec build, [`Encoder::start_with_options`] returns
+/// [`EncodeError::BackendUnavailable`].
+#[derive(Debug, Default, Clone, Copy, PartialEq, Eq)]
+pub enum EncoderBackend {
+    /// libx264 software encoder. Highest quality at a given bitrate, slow at
+    /// 4K (~60 ms/frame at 4K30 on M-series — see ADR 0010).
+    #[default]
+    Software,
+    /// Platform hardware encoder. macOS: `h264_videotoolbox`. Other
+    /// platforms not wired up yet.
+    Hardware,
+}
+
 /// Optional tuning knobs for the encoder.
 ///
-/// Default leaves all knobs unset, matching pre-O9 behavior (libx264 default
-/// crf=23). Set `crf` to override quality: lower = higher quality, higher =
-/// smaller file. Sensible range 18 (visually lossless) to 28 (preview-grade).
+/// Default leaves quality unset (libx264 default crf=23) and selects the
+/// software encoder. Set `crf` to override quality: lower = higher quality,
+/// higher = smaller file. Sensible range 18 (visually lossless) to 28
+/// (preview-grade). `crf` is ignored on the hardware backend (videotoolbox
+/// uses a different quality knob; not yet plumbed).
 #[derive(Debug, Default, Clone)]
 pub struct EncoderOptions {
     /// libx264 Constant Rate Factor. `None` lets libx264 use its built-in
     /// default. Values outside `0..=51` are passed through to libx264, which
-    /// will reject them at codec-open time.
+    /// will reject them at codec-open time. Ignored when `backend` is
+    /// `Hardware`.
     pub crf: Option<u8>,
+    /// Which h264 encoder backend to use. Defaults to `Software` (libx264).
+    pub backend: EncoderBackend,
 }
 
 /// Errors surfaced by [`Encoder`] start, frame push, or finish.
@@ -59,6 +82,8 @@ pub enum EncodeError {
     Ffmpeg(#[from] ffmpeg::Error),
     #[error("h264 encoder unavailable in this libavcodec build")]
     EncoderUnavailable,
+    #[error("requested encoder backend ({0}) not available in this libavcodec build")]
+    BackendUnavailable(&'static str),
     #[error("encoder worker thread terminated unexpectedly")]
     WorkerGone,
     #[error("encoder worker thread panicked")]
@@ -95,7 +120,7 @@ impl Encoder {
     #[tracing::instrument(
         name = "encoder::start",
         skip_all,
-        fields(width, height, fps, crf = ?options.crf),
+        fields(width, height, fps, crf = ?options.crf, backend = ?options.backend),
     )]
     pub fn start_with_options(
         output: &Path,
@@ -122,14 +147,33 @@ impl Encoder {
         let mut octx = format::output(&output)?;
         let global_header = octx.format().flags().contains(format::Flags::GLOBAL_HEADER);
 
-        let codec = ffmpeg::encoder::find(CodecId::H264).ok_or(EncodeError::EncoderUnavailable)?;
+        // Codec + pixel format pick. Hardware path uses NV12 (libx264 also
+        // accepts it but YUV420P is the historical default for the software
+        // path, and bit-for-bit output stability across encoder versions is
+        // easier with the unchanged software-path config).
+        let (codec, encoder_pix_fmt) = match options.backend {
+            EncoderBackend::Software => {
+                let codec =
+                    ffmpeg::encoder::find(CodecId::H264).ok_or(EncodeError::EncoderUnavailable)?;
+                (codec, Pixel::YUV420P)
+            }
+            EncoderBackend::Hardware => {
+                // macOS hardware encoder via VideoToolbox. Linux/Windows
+                // hardware encoders (NVENC/AMF/QSV) not wired up yet — fall
+                // straight to BackendUnavailable rather than silently picking
+                // a non-VT codec.
+                let codec = ffmpeg::encoder::find_by_name("h264_videotoolbox")
+                    .ok_or(EncodeError::BackendUnavailable("h264_videotoolbox"))?;
+                (codec, Pixel::NV12)
+            }
+        };
 
         let in_time_base = ffmpeg::Rational::new(1, fps as i32);
 
         let mut enc = CodecContext::new_with_codec(codec).encoder().video()?;
         enc.set_width(width);
         enc.set_height(height);
-        enc.set_format(Pixel::YUV420P);
+        enc.set_format(encoder_pix_fmt);
         enc.set_time_base(in_time_base);
         enc.set_frame_rate(Some(ffmpeg::Rational::new(fps as i32, 1)));
 
@@ -141,7 +185,13 @@ impl Encoder {
 
         let mut opts = Dictionary::new();
         if let Some(crf) = options.crf {
-            opts.set("crf", &crf.to_string());
+            // CRF is libx264-specific. h264_videotoolbox uses a different
+            // quality knob (`-q:v 0..100` or bitrate); we don't translate yet
+            // (ADR 0010 follow-on). Silently ignore on the hardware path so
+            // callers can leave `crf` set without per-backend branching.
+            if options.backend == EncoderBackend::Software {
+                opts.set("crf", &crf.to_string());
+            }
         }
 
         let opened = enc.open_with(opts)?;
@@ -177,7 +227,7 @@ impl Encoder {
                     Pixel::RGBA,
                     width,
                     height,
-                    Pixel::YUV420P,
+                    encoder_pix_fmt,
                     width,
                     height,
                     ScalerFlags::BILINEAR,

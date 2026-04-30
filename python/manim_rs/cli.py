@@ -43,6 +43,11 @@ class Quality(str, Enum):
     uhd = "uhd"
 
 
+class EncoderBackend(str, Enum):
+    software = "software"
+    hardware = "hardware"
+
+
 _QUALITY_RESOLUTIONS: dict[Quality, tuple[int, int]] = {
     Quality.low: (854, 480),
     Quality.med: (1280, 720),
@@ -189,7 +194,17 @@ def render(
         help=(
             "libx264 Constant Rate Factor (0-51, lower = higher quality). "
             "Recommended: 18 (visually lossless), 23 (default), 28 (preview). "
-            "Unset uses ffmpeg's default."
+            "Unset uses ffmpeg's default. Ignored on --encoder hardware."
+        ),
+    ),
+    encoder: EncoderBackend = typer.Option(  # noqa: B008
+        EncoderBackend.software,
+        "--encoder",
+        case_sensitive=False,
+        help=(
+            "h264 encoder backend. 'software' = libx264 (default, portable). "
+            "'hardware' = platform GPU encoder (h264_videotoolbox on macOS). "
+            "Hardware is much faster at 4K but produces a different bit stream."
         ),
     ),
     trace_json: Path = typer.Option(  # noqa: B008
@@ -224,6 +239,7 @@ def render(
         ir.to_builtins(scene_ir),
         str(out),
         crf=crf,
+        encoder_backend=encoder.value,
         progress=progress_cb,
     )
     if progress_cb is not None:

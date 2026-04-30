@@ -22,7 +22,7 @@ use manim_rs_eval::Evaluator;
 use manim_rs_ir::Scene;
 use manim_rs_raster::{Camera, Runtime, RuntimeError as RasterError};
 
-pub use manim_rs_encode::EncoderOptions;
+pub use manim_rs_encode::{EncoderBackend, EncoderOptions};
 
 /// Anything that can go wrong while rendering a scene to disk.
 #[derive(Debug, thiserror::Error)]

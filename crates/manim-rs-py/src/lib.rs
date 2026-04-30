@@ -15,7 +15,8 @@ use std::sync::OnceLock;
 use manim_rs_eval::{Evaluator, SceneState};
 use manim_rs_ir::Scene;
 use manim_rs_runtime::{
-    EncoderOptions, RenderOptions, RuntimeError, render_frame_to_png, render_to_mp4_with_options,
+    EncoderBackend, EncoderOptions, RenderOptions, RuntimeError, render_frame_to_png,
+    render_to_mp4_with_options,
 };
 use manim_rs_tex::tex_to_display_list;
 use pyo3::exceptions::{PyRuntimeError, PyValueError};
@@ -129,13 +130,14 @@ fn depythonize_scene(ir: &Bound<'_, PyAny>) -> PyResult<Scene> {
 /// without rewriting the Python scene. The GIL is released for the duration
 /// of the render.
 #[pyfunction]
-#[pyo3(signature = (ir, out, fps=None, crf=None, progress=None))]
+#[pyo3(signature = (ir, out, fps=None, crf=None, encoder_backend=None, progress=None))]
 fn render_to_mp4(
     py: Python<'_>,
     ir: &Bound<'_, PyAny>,
     out: &str,
     fps: Option<u32>,
     crf: Option<u8>,
+    encoder_backend: Option<&str>,
     progress: Option<Py<PyAny>>,
 ) -> PyResult<()> {
     let mut scene = depythonize_scene(ir)?;
@@ -147,9 +149,19 @@ fn render_to_mp4(
         scene.metadata.fps = fps;
     }
 
+    let backend = match encoder_backend {
+        None | Some("software") => EncoderBackend::Software,
+        Some("hardware") => EncoderBackend::Hardware,
+        Some(other) => {
+            return Err(PyValueError::new_err(format!(
+                "encoder_backend must be 'software' or 'hardware', got {other:?}",
+            )));
+        }
+    };
+
     let out_path = PathBuf::from(out);
     let render_options = RenderOptions {
-        encoder: EncoderOptions { crf },
+        encoder: EncoderOptions { crf, backend },
     };
     py.allow_threads(move || -> Result<(), manim_rs_runtime::RuntimeError> {
         // Wrap the optional Python callable into a closure the Rust runtime

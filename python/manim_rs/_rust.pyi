@@ -10,6 +10,7 @@ def render_to_mp4(
     out: str,
     fps: int | None = ...,
     crf: int | None = ...,
+    encoder_backend: str | None = ...,
     progress: Callable[[int, int], None] | None = ...,
 ) -> None: ...
 def eval_at(ir: Any, t: float) -> Any: ...
