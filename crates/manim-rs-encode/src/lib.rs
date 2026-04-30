@@ -91,7 +91,7 @@ pub enum EncodeError {
     #[error("h264 encoder unavailable in this libavcodec build")]
     EncoderUnavailable,
     #[error("requested encoder backend not available: {0}")]
-    BackendUnavailable(&'static str),
+    BackendUnavailable(String),
     #[error("encoder worker thread terminated unexpectedly")]
     WorkerGone,
     #[error("encoder worker thread panicked")]
@@ -174,7 +174,8 @@ impl Encoder {
                     .iter()
                     .find_map(|name| ffmpeg::encoder::find_by_name(name))
                     .ok_or(EncodeError::BackendUnavailable(
-                        "no hardware h264 encoder (tried h264_videotoolbox, h264_nvenc)",
+                        "no hardware h264 encoder (tried h264_videotoolbox, h264_nvenc)"
+                            .to_string(),
                     ))?;
                 (codec, Pixel::NV12)
             }
@@ -206,7 +207,15 @@ impl Encoder {
             }
         }
 
-        let opened = enc.open_with(opts)?;
+        let opened = match enc.open_with(opts) {
+            Ok(o) => o,
+            Err(e) if options.backend == EncoderBackend::Hardware => {
+                return Err(EncodeError::BackendUnavailable(format!(
+                    "hardware encoder found but failed to open: {e}"
+                )));
+            }
+            Err(e) => return Err(e.into()),
+        };
 
         {
             let mut stream = octx.add_stream(codec)?;
