@@ -1,56 +1,57 @@
 # Status
 
-**Last updated:** 2026-04-28
+**Last updated:** 2026-04-29
 **Current slice:** Slice E — Steps 1–5 shipped, Steps 6–9 remaining.
-Plan: `docs/slices/slice-e.md`. ADRs through `0008`. Slice D shipped.
+This branch (`chcardoz/hello`) carries the perf + hardware-encoder
+work: pixel-cache removal (ADR 0009), in-process encoder (ADR 0010),
+and hardware h264 backend with VT→NVENC fallback (ADR 0011). Ready
+for PR; resume Slice E Step 6 after merge.
 
 ## Last session did
 
-Slice E Step 5 (Python `Tex` mobject + macro pre-expansion +
-`tex_validate`), plus a mid-slice detour adding the single-frame
-render API (`render_frame_to_png` / `render_frame` / `frame` CLI
-subcommand), plus two visual fixes (lyon `FILL_TOLERANCE = 0.001`
-and swash `OUTLINE_PPEM = 1024`). Closed with a `/simplify` review
-that landed eight surgical fixes (compile_tex error chain, font
-cache race, GIL during tex_validate, cache-key narrowing, CLI
-dedup, etc.).
+Added `EncoderBackend::Hardware` to `EncoderOptions`, exposed as
+`--encoder hardware` on the CLI. The backend walks `HARDWARE_CANDIDATES`
+(`h264_videotoolbox` → `h264_nvenc`) at session start and picks the
+first codec present in libavcodec. NV12 pixel format for both. Same
+binary works on macOS dev (VT) and Linux+Nvidia deploy (NVENC) without
+a code change.
 
-Full session details in:
+Also rewrote the Python integration test scene to cover every
+author-facing surface shipped through Slice E:
 
-- `docs/decisions/0008-slice-e-decisions.md` — design decisions A–F.
-- `docs/slices/slice-e.md` §11 — retrospective, including the
-  /simplify cleanup pass bug-class breakdown.
-- `docs/gotchas.md` — two new entries (low-ppem hinting, lyon
-  default tolerance).
-- `docs/performance.md` — Slice E observations E1–E3, plus E3a/b/c
-  (PyRuntime PyClass, tracing instrumentation, error-chain at the
-  pyo3 boundary).
-- `docs/future-directions.md` — new file: architectural
-  watchpoints with concrete triggers.
+- All 3 mobjects (`Polyline`, `BezPath`, `Tex`)
+- All 5 BezPath verbs (the green teardrop alone uses every one)
+- All 6 transforms (`Translate`/`Rotate`/`ScaleBy`/`FadeIn`/`FadeOut`/`Colorize`)
+- 8 representative easings + the 4 Scene API methods
+  (`add`/`play`/`wait`/`remove`)
 
-`cargo test --workspace` and `pytest tests/python` (111 tests)
-green.
+Three-phase 3 s timeline (arrival → flourish → depart-and-remove);
+frames 15/45 strict centroid checks, frame 84 existence-only check
+catches `FadeOut`/`RemoveOp` regressions.
+
+Verification:
+
+- `cargo test --workspace`: green (5 encoder tests now, was 4 — new
+  `hardware_encoder_writes_valid_mp4` smoke gates on
+  `BackendUnavailable` and skips silently if no hw encoder is linked).
+- `pytest tests/python`: 111 passed (added integration test).
+- `--encoder hardware` perf on M-series macOS (VT vs libx264):
+  - 4K30 2 s: 10.6 s → **3.4 s** (~3×, CPU 134 % → 82 %)
+  - 1080p60 2 s: 2.42 s → 2.14 s (~12 %)
 
 ## Next action
 
-**Slice E Step 6** — Tex coverage corpus + snapshot pinning.
-Pinned LaTeX expressions exercising fractions, Greek + AMS
-symbols, `\textcolor`, every KaTeX font face. Per-entry
-single-frame render + tolerance snapshot. Plan: `slice-e.md` §3
-Step 6.
+After PR lands, resume **Slice E Step 6**: Tex coverage corpus +
+tolerance snapshot pinning.
 
-Pre-Step-6 prep:
+Perf followups (now reframed):
 
-1. Pick tolerance type (per-pixel max, mean delta, or SSIM) and
-   confirm stable across two warm runs.
-2. Decide baseline storage strategy
-   (`UPDATE_TEX_SNAPSHOTS=1`-style regen flag preferred over
-   git-tracked image bytes).
-3. Re-skim `docs/gotchas.md` for the two Slice E entries before
-   diagnosing any visual artifact.
-
-Working rhythm: one step at a time, rewrite STATUS.md at
-end-of-session.
+- N17 (encoder finish tail): closed by 0010 at 1080p; closed by 0011
+  at 4K via VT.
+- O1 (cache `Runtime`): next big lever for short renders / interactive
+  use — unblocks PyRuntime (E3a).
+- Deploy-time NVENC validation on Modal/fly.io GPU containers (T4/A10/A100):
+  out of scope here; pre-wired so the deploy commit is pure infra.
 
 ## Blockers
 

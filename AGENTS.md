@@ -76,6 +76,18 @@ For non-trivial slices, prefer **one step at a time**: explain the next step →
 
 Tasks vs `STATUS.md`: **tasks are for in-session tracking** (3+ steps inside one turn); **`STATUS.md` is the between-session handoff**. They don't duplicate. Close tasks inside the session; rewrite `STATUS.md` at the end before handing back.
 
+### Clean-tree gate (do this before the first edit of every session)
+
+Before the **first** file mutation of a session — `Edit`, `Write`, `NotebookEdit`, **or** a `Bash` command that changes the working tree (`rm`, `mv`, `cp`, redirection, `sed -i`, `git checkout/restore`, etc.) — check the working tree:
+
+1. Run `git status` and `git diff --stat`. If both report a clean tree, proceed.
+2. If the tree is dirty, **stop**. Invoke the `/git-commit` skill to propose a logical commit grouping for the existing changes. Present the grouping to the user, explain it, and ask for approval before committing.
+3. Only after the user approves the commit (or explicitly waives the check — "go ahead", "skip the commit", etc.) may you proceed with the original edit.
+
+This applies to *Bash mutations too*, not just editor tools. `rm somefile.rs` counts as a first edit. The point is to land in-flight work as a clean diff before you start mixing a new task into it; bypassing this rule via `Bash` defeats the whole purpose.
+
+Once you've checked (or been waived) once in a session, you don't need to re-check; subsequent edits in the same session go through.
+
 ## Quick pointers
 
 - **Language split:** Python authoring → IR → Rust runtime (eval + wgpu raster + ffmpeg encode). See `docs/architecture.md` §2–§5 for the full stack and version pins.

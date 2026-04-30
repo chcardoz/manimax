@@ -43,6 +43,11 @@ class Quality(str, Enum):
     uhd = "uhd"
 
 
+class EncoderBackend(str, Enum):
+    software = "software"
+    hardware = "hardware"
+
+
 _QUALITY_RESOLUTIONS: dict[Quality, tuple[int, int]] = {
     Quality.low: (854, 480),
     Quality.med: (1280, 720),
@@ -108,6 +113,29 @@ def _build_scene_ir(
     return scene.ir
 
 
+def _make_progress_callback():
+    """Build a `(frame_idx, total)` callback that overwrites a single stderr
+    line via `\\r`. Frame indices arrive 0-based; we display 1-based for
+    end users. The renderer guarantees `total > 0` only when there are
+    frames to render, so we guard against ZeroDivisionError defensively."""
+    last_pct = -1
+
+    def _cb(idx: int, total: int) -> None:
+        nonlocal last_pct
+        if total <= 0:
+            return
+        # Throttle redraws to once per percent so the terminal doesn't drown
+        # in escape sequences on a 4K 120 fps long render.
+        pct = ((idx + 1) * 100) // total
+        if pct == last_pct and idx + 1 != total:
+            return
+        last_pct = pct
+        sys.stderr.write(f"\rframe {idx + 1}/{total} ({pct:3d}%)")
+        sys.stderr.flush()
+
+    return _cb
+
+
 def _open_file(path: Path) -> None:
     if sys.platform == "darwin":
         cmd = ["open", str(path)]
@@ -153,12 +181,49 @@ def render(
     open_after: bool = typer.Option(
         False, "-o", "--open", help="Open the output file once rendering finishes."
     ),
+    progress: bool = typer.Option(
+        True,
+        "--progress/--no-progress",
+        help="Print a per-frame progress line to stderr (default on).",
+    ),
+    crf: int = typer.Option(
+        None,
+        "--crf",
+        min=0,
+        max=51,
+        help=(
+            "libx264 Constant Rate Factor (0-51, lower = higher quality). "
+            "Recommended: 18 (visually lossless), 23 (default), 28 (preview). "
+            "Unset uses ffmpeg's default. Ignored on --encoder hardware."
+        ),
+    ),
+    encoder: EncoderBackend = typer.Option(  # noqa: B008
+        EncoderBackend.software,
+        "--encoder",
+        case_sensitive=False,
+        help=(
+            "h264 encoder backend. 'software' = libx264 (default, portable). "
+            "'hardware' = platform GPU encoder (h264_videotoolbox on macOS). "
+            "Hardware is much faster at 4K but produces a different bit stream."
+        ),
+    ),
+    trace_json: Path = typer.Option(  # noqa: B008
+        None,
+        "--trace-json",
+        help=(
+            "Write per-stage tracing spans (eval/raster/readback/encoder) to this "
+            "JSON file. Honors RUST_LOG (default: info)."
+        ),
+    ),
 ) -> None:
     """Render ``scene_name`` from ``module_path`` to ``out``."""
     if duration is not None and duration <= 0.0:
         raise typer.BadParameter("duration must be positive", param_hint="--duration")
     if fps <= 0:
         raise typer.BadParameter("fps must be positive", param_hint="--fps")
+
+    if trace_json is not None:
+        _rust.install_trace_json(str(trace_json))
 
     w, h = _resolve_dimensions(quality, resolution)
     scene_ir = _build_scene_ir(module_path, scene_name, fps, w, h)
@@ -169,7 +234,17 @@ def render(
             metadata=msgspec.structs.replace(scene_ir.metadata, duration=duration),
         )
 
-    _rust.render_to_mp4(ir.to_builtins(scene_ir), str(out))
+    progress_cb = _make_progress_callback() if progress else None
+    _rust.render_to_mp4(
+        ir.to_builtins(scene_ir),
+        str(out),
+        crf=crf,
+        encoder_backend=encoder.value,
+        progress=progress_cb,
+    )
+    if progress_cb is not None:
+        sys.stderr.write("\n")
+        sys.stderr.flush()
     typer.echo(f"wrote {out}")
 
     if open_after:
@@ -203,12 +278,20 @@ def frame(
     open_after: bool = typer.Option(
         False, "-o", "--open", help="Open the output file once rendering finishes."
     ),
+    trace_json: Path = typer.Option(  # noqa: B008
+        None,
+        "--trace-json",
+        help="Write per-stage tracing spans to this JSON file.",
+    ),
 ) -> None:
     """Render a single frame at time ``--t`` from ``scene_name`` to ``out`` as PNG."""
     if t < 0.0:
         raise typer.BadParameter("--t must be non-negative", param_hint="--t")
     if fps <= 0:
         raise typer.BadParameter("fps must be positive", param_hint="--fps")
+
+    if trace_json is not None:
+        _rust.install_trace_json(str(trace_json))
 
     w, h = _resolve_dimensions(quality, resolution)
     scene_ir = _build_scene_ir(module_path, scene_name, fps, w, h)

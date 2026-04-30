@@ -60,11 +60,14 @@ Every frame re-tessellates every object via lyon. In Slice C, objects only chang
 
 **Implication:** don't render at 24 fps to save time — barely saves anything. Default to 60 fps when smoothness matters.
 
-### O6. Encoder is a meaningful share at high resolution
+### O6. Encoder is a meaningful share at high resolution ✅ partially shipped (2026-04-29, ADR 0010)
 
-ffmpeg runs as a subprocess with stdin piping of raw RGBA bytes. At 1080p × 120 fps × 2 s = ~2 GB piped per render. Subprocess startup + pipe overhead are non-trivial at these sizes.
+(a) shipped: in-process libavcodec via `ffmpeg-the-third` + worker
+thread. 1080p −18–20 %, 4K at parity (encoder CPU is the wall, not the
+pipe). See N18.
 
-**Levers:** (a) in-process libavcodec bindings — removes the pipe and subprocess startup. (b) hardware encoders via libav (VideoToolbox on Apple Silicon, NVENC on Nvidia). Both higher implementation cost than O1/O4; only worth it at 1080p+.
+(b) hardware encoders via libav (VideoToolbox on Apple Silicon, NVENC
+on Nvidia) remain the durable 4K lever; not done yet.
 
 ### O7. `eval_at` is free — build features on top of it
 
@@ -78,21 +81,26 @@ Parallel chunked rendering in particular is the **easy-mode way to make long ren
 
 **Headroom observed:** during the 4K 120 fps stress render, `time` reported **198% CPU utilization** — one render thread plus the ffmpeg subprocess. On an 8–10 core M-series that's ~25% of available cores in use. There's 3–4× parallelism headroom sitting unused before we'd hit a core ceiling, so parallel chunked rendering would translate directly into a 3–4× speedup on long renders.
 
-### O8a. 4K render scales super-linearly — likely encoder pipe I/O
+### O8a. 4K render scales super-linearly — likely encoder pipe I/O ✅ partially shipped (2026-04-29, ADR 0010)
 
 Complex scene (27 objects, ~85 tracks, 4s) at 1080p 120fps projects to ~56 ms/frame from the probe's linear model. Measured at 4K 120fps: 132 ms/frame. 2.3× slower than the linear prediction, suggesting raw-RGBA piping to ffmpeg (~33 MB/frame at 4K) is hitting a ceiling that's not per-pixel shader work.
 
-**Lever:** same as O6 — in-process encoder skips the pipe entirely. At 4K this would likely be a meaningful win. Hardware encoder via libav (VideoToolbox) would compound.
+In-process libavcodec (N18) removed the pipe; 4K is now at parity with
+the subprocess baseline rather than super-linear, but absolute 4K
+throughput is encoder-CPU-bound (per-frame encode ~60 ms vs ~17 ms
+raster). Hardware encoder via VideoToolbox is the remaining lever.
 
 ### O8. MSAA sample count is unprofiled
 
 Currently hardcoded at 4×. Haven't measured 1× / 2× / 8×. If MSAA resolve is a meaningful share of per-frame cost (O2 suggests it might be), a quality knob is worth adding.
 
-### O9. Encoder quality/bitrate knobs aren't exposed
+### O9. Encoder quality/bitrate knobs ✅ shipped (2026-04-28)
 
-The 4K 120 fps complex-scene render produced a **2.9 MB mp4 for 4 s of video — ~5.8 Mbps**. That's very low for 4K (Netflix ships 4K at 15–25 Mbps). We pass no `--crf`, `--preset`, or `--bitrate` to ffmpeg; we're taking the default, which is optimized for fast encode, not quality. Scenes with gradients, many small objects, or motion-heavy content may be getting silently lossy output. Users will notice before they notice any perf issue.
-
-**Lever:** plumb a `--quality` level (or explicit `--crf`) from the CLI through to the encoder. Not a speedup, but a quality knob that prevents "my scene looks bad" bug reports.
+CLI `--crf 0..51` now plumbs through `_rust.render_to_mp4(..., crf=...)` →
+`RenderOptions.encoder.crf` → `Encoder::start_with_options` → `-crf <N>`
+on the ffmpeg command line. Default unset preserves prior behavior
+(libx264 default crf=23). `--preset` and explicit `--bitrate` not yet
+exposed; same plumbing — extend `EncoderOptions` when a caller needs them.
 
 ### O10. 4K render memory footprint is ~200 MB per call
 
@@ -102,11 +110,13 @@ Fine on modern dedicated GPUs and Apple Silicon. Not fine on CI runners with int
 
 **Lever:** make MSAA sample count configurable (O8) — dropping to 2× cuts the color target to 66 MB. Also worth considering whether the readback buffer should be freed between renders rather than held for the lifetime of the `Runtime`.
 
-### O11. No progress feedback during long renders
+### O11. Progress feedback during long renders ✅ shipped (2026-04-28)
 
-The 4K stress test ran for 63 seconds with a silent terminal. No "frame X/480" line, no bar, nothing. Not a perf bug but a perceived-perf / UX one: silent long operations feel broken. A single `\r`-based stderr line updated per frame would cost nothing and remove the "is it hung?" anxiety.
-
-**Lever:** pass a progress callback into `render_to_mp4` and print from the Python side. Trivial to add.
+`render_to_mp4_with_cache` now accepts `Option<&mut dyn FnMut(u32, u32)>`;
+the pyo3 boundary wraps an optional `Callable[[int, int], None]` that
+re-acquires the GIL once per frame (microseconds vs. 10–30 ms render
+cost). CLI exposes `--progress/--no-progress` (default on) and prints
+`\rframe N/M (P%)` to stderr, throttled to once per percent.
 
 ### O12. Post-0005 evaluator-boundary cleanup did not visibly regress render throughput
 
@@ -123,17 +133,100 @@ Added after a fresh read across `crates/manim-rs-eval`, `raster`, `runtime`,
 instrumentation we're guessing about relative cost. Everything else is
 sequenced on the assumption that gets done first.
 
-### N9. No timing instrumentation anywhere — the meta-fix
+### N9. Timing instrumentation ✅ shipped (2026-04-28)
 
-`perf_probe.py` measures wallclock totals; there is no per-stage breakdown.
-We cannot currently answer "of the 18 ms/frame at 1080p, how much is eval
-vs. tessellation vs. GPU submit vs. readback vs. ffmpeg pipe?" Every O-item
-above is sized by guesswork.
+`tracing` spans now wrap `eval_at`, `raster::render`, `readback`,
+`encoder::push_frame`, plus a `frame{idx}` span around each frame's
+work and a `render_to_mp4` span around the whole call. Follow-up
+instrumentation also covers the previously-hidden fixed/setup and cache
+boundaries: `raster::Runtime::new`, `encoder::start`,
+`encoder::finish`, `cache::key_hasher`, `cache::frame_key`,
+`cache::get`, `cache::put`, `cache::put.write_all`,
+`cache::put.sync_all`, `cache::put.persist`, and `png::write_rgba`.
+Subscriber lives in `manim-rs-py::install_trace_json(path)`; CLI
+exposes `--trace-json PATH` on both `render` and `frame` subcommands.
+Output format is `tracing-subscriber` JSON (one event per span close),
+filterable via `RUST_LOG`. Built-in JSON, not Chrome-trace — a small
+post-processor can convert if Perfetto/Chrome ingest is wanted.
 
-**Lever:** `tracing` spans at four boundaries in `manim-rs-runtime::render_to_mp4`:
-`eval_at`, `raster::render`, `readback`, `encoder::push_frame`. Chrome-trace
-JSON dump behind a `--trace-json` CLI flag. One afternoon; gates prioritisation
-of O2/O3/O4/O8a.
+This unblocks sizing of O2 (per-pixel), O3 (per-object submit), O4
+(tessellation cache), N6 (render/encode pipeline). Next perf pass:
+collect trace data on a representative scene and re-prioritise.
+
+### N17. Post-cache-removal trace probes (2026-04-29)
+
+Same `tests/python/integration_scene.py` scene, traces collected after
+ADR 0009. No `cache::*` spans appear; no `.manim-rs-cache/` directory
+is created on any run.
+
+| run | before (cache, N16) | after (no cache) | speedup | frame mean before → after |
+| --- | ---: | ---: | ---: | --- |
+| 1080p60, 2s cold | 7.91 s | **3.11 s** | 2.5× | 64.7 ms → **18.5 ms** |
+| 1080p60, 2s 2nd run | 2.20 s (warm hit-every-frame) | **2.19 s** (no cache to hit) | ~tied | 15.5 ms → 14.2 ms |
+| 4K30, 0.5s cold | 6.06 s | **1.36 s** | 4.5× | 371.7 ms → **35.7 ms** |
+
+The 1080p60 first-run win is exactly the `cache::put` cost (~46 ms/frame)
+disappearing. The 4K30 first-run win is even larger (~336 ms/frame) for
+the same reason — raw-RGBA writes scale linearly with pixel count, so
+removing them helps higher resolutions disproportionately.
+
+The 2nd-run case at 1080p60 is tied because the previous "warm" path was
+already pipe-bound (every frame: `cache::get` 7.3 ms + `push_frame` 7.9 ms
++ `finish` 311 ms). The new path rasters instead of reading cache, but the
+encoder pipe + finish are still the floor — same wall time.
+
+**New visible bottleneck at 4K:** `encoder::finish` is now **631 ms**
+(~46 % of 4K30 total wall time). Cold 4K renders are now finish-bound,
+not write-bound. The lever is O6 / O8a (in-process encoder skips the
+pipe entirely) or running multiple encoder processes in parallel via
+chunked rendering (O7).
+
+### N18. In-process libavcodec encoder via worker thread (2026-04-29) ✅ shipped (ADR 0010)
+
+Replaced `Command::spawn("ffmpeg") + stdin pipe` with in-process
+libavcodec via `ffmpeg-the-third = "5"`. Encoder runs on a worker
+thread fed by `mpsc::sync_channel(1)`; `push_frame` hands an owned
+`Vec<u8>` and continues immediately when the worker is idle.
+
+A naive single-threaded in-process encoder *regressed* throughput
+(1080p60 cold 3.11 → 3.17 s, 4K30 cold 1.36 → 1.76 s) because the
+subprocess was getting free OS-level parallelism. Worker thread restores
+the overlap inside our process.
+
+| Workload          | Subprocess (N17) | In-process (worker) | Δ      |
+| ----------------- | ---------------- | ------------------- | ------ |
+| 1080p60 cold 2 s  | 3.11 s           | **2.56 s**          | −18 %  |
+| 1080p60 warm 2 s  | ~3.10 s          | **2.48 s**          | −20 %  |
+| 4K30 cold 0.5 s   | 1.36 s           | 1.52 s              | +12 %† |
+| 4K30 cold 2.0 s   | ~5.4 s extrap.   | 5.69 s              | ≈      |
+
+† Short 4K runs are encoder-throughput-bound, not architecture-bound:
+per-frame encode is ~60 ms vs ~17 ms raster, so 13/15 frames drain
+inside `finish` in the 0.5 s case. Longer 4K runs are at parity with
+subprocess. The follow-on lever is hardware encoders (videotoolbox /
+nvenc) — not more pipeline plumbing.
+
+Closes O6 / O8a for 1080p; partially closes for 4K (architecture neutral,
+encoder CPU is the wall).
+
+### N16. Raw RGBA cache writes dominate cold high-res renders ✅ closed by removal (2026-04-29, ADR 0009)
+
+Measured 2026-04-29 with the expanded trace spans on
+`tests/python/integration_scene.py`:
+
+| run | total | frame mean | raster mean | cache::put mean | write_all mean | sync_all mean | finish |
+| --- | ---: | ---: | ---: | ---: | ---: | ---: | ---: |
+| 1080p60, 2s cold | 7.91 s | 64.7 ms | 7.7 ms | 52.8 ms | 40.4 ms | 11.3 ms | 121 ms |
+| 1080p60, 2s warm | 2.20 s | 15.5 ms | n/a | n/a | n/a | n/a | 311 ms |
+| 4K30, 0.5s cold | 6.06 s | 371.7 ms | 19.9 ms | 340.7 ms | 313.9 ms | 26.1 ms | 449 ms |
+
+The earlier "missing time" was writing raw RGBA cache entries to disk
+on every miss — more expensive than the raster it was meant to skip.
+Resolved by deleting the entire on-disk pixel cache (ADR 0009). D2 / D3
+/ D6 / D7 (cache-tuning suggestions) and N15 (small warm-rerun speedup)
+all close out at the same time. Future raster-skip features should be
+considered fresh against `Runtime` caching (O1) and parallel chunked
+rendering (O7) instead of a frame-bytes store.
 
 ### N1. `eval_at` allocates fresh collections per frame
 
@@ -262,19 +355,26 @@ O6 / O8a (in-process encoder, the only thing that removes the 4.7 GB
 pipe). This entry exists so a future perf pass can prioritise them with
 a concrete number, not "the cache should be faster."
 
-### N14. ffmpeg stderr is never drained during encode
+### N14. ffmpeg stderr drain ✅ shipped (2026-04-28)
 
-`crates/manim-rs-encode/src/lib.rs` — stderr is captured but only read after
-`wait()` on encoder finish. Long renders with chatty ffmpeg output
-(occasional libx264 warnings even at `loglevel error`) can fill the pipe's
-kernel buffer and block ffmpeg on stderr writes — which stalls stdin →
-stalls our `push_frame` write → deadlock.
-
-**Lever:** spawn a stderr-drain thread in `Encoder::start` that reads and
-discards (or captures into a ring buffer for error diagnostics). Pairs
-with O11 (progress output) — both want a stderr reader.
+`Encoder::start` now spawns a background thread that line-reads ffmpeg
+stderr into a 64 KiB-capped `Arc<Mutex<String>>`. Cap is "first N bytes
+win"; chatty libx264 warnings on long renders can no longer fill the
+kernel pipe buffer and deadlock the encoder. `finish` joins the drain
+thread after `wait()`; `Drop` does the same on abnormal shutdown.
+`NonZeroExit.stderr` reads from the captured buffer instead of
+`child.stderr.read_to_string()`.
 
 ---
+
+## D1–D7 — Pixel cache tuning ✅ closed by removal (2026-04-29, ADR 0009)
+
+The seven D-series entries (hash format, allocation on hit, size-check
+ordering, per-frame tessellation, hit pipelining, cache size, drop
+`sync_all`) all targeted the on-disk pixel cache. The cache itself was
+removed (ADR 0009 / N16) — D1, D2, D3, D5, D6, D7 are obsolete. D4 is
+about per-frame *tessellation* allocation, which is independent of the
+pixel cache; left in place below.
 
 ## D1 — Cache hash format: JSON vs. direct byte stream
 
@@ -440,24 +540,17 @@ directly. One afternoon. Gates O2/O3/O4/N6/D1.
 **Trigger:** before any of those perf items get touched. Don't
 optimize what you haven't measured.
 
-### E3c. `From<RuntimeError> for PyErr` instead of stringifying at the boundary
+### E3c. PyErr chain at the pyo3 boundary ✅ shipped (2026-04-28)
 
-Every Python-facing function in `manim-rs-py/src/lib.rs` wraps
-errors via `.map_err(|e| PyRuntimeError::new_err(format!("X
-failed: {e}")))`. `RuntimeError` is `thiserror`-derived with a
-proper `source()` chain (Encoder → io::Error, etc.); the `format!`
-flattens it. Python tracebacks lose the chain.
-
-**Fix:** one `From<RuntimeError> for PyErr` impl that walks the
-chain and concatenates causes (or, better, raises a `PyRuntimeError`
-with `__cause__` set via pyo3's `PyErr::set_cause`). The four
-`map_err` closures collapse to plain `?`. Negligible perf, real
-debuggability win — Python users debugging a render failure see
-"failed to spawn ffmpeg → No such file or directory" instead of
-"render_to_mp4 failed: encoder error."
-
-**Trigger:** any time someone files a "render failed and I can't
-tell why" report. Cost: small (one impl, four call-site cleanups).
+`manim-rs-py::runtime_err_to_pyerr(RuntimeError) -> PyErr` walks the
+`std::error::Error::source` chain and builds a `PyRuntimeError` with
+`__cause__` set via `PyErr::set_cause` (inside-out construction so
+outer message points to inner cause). Free function rather than
+`From<RuntimeError> for PyErr` — orphan rules forbid the latter
+since both types live outside `manim-rs-py`. Two call sites
+(`render_to_mp4`, `render_frame`) collapsed from
+`.map_err(|e| PyRuntimeError::new_err(format!("X failed: {e}")))?`
+to `.map_err(runtime_err_to_pyerr)?`. Discharges future-directions F7.
 
 ### E3. `tex_validate` runs RaTeX parse+layout twice per Tex (once at construction, once at compile)
 
@@ -520,18 +613,23 @@ caller wants the rendered bytes without an intermediate file,
 
 ## Priority order (if doing a perf pass)
 
-Rough cost/benefit for a future batched pass:
+Rough cost/benefit for a future batched pass. Items shipped 2026-04-28
+struck out and left in place for cross-reference.
 
-1. **N9 — instrumentation** — prerequisite. Everything below is guesswork until we can measure per-stage time.
-2. **O11 — progress output** — trivial, fixes the "is it hung?" UX at high resolutions immediately.
-3. **N14 — ffmpeg stderr drain** — cheap, closes a latent deadlock on long renders. Pairs with O11.
+1. ~~**N9 — instrumentation**~~ ✅ shipped 2026-04-28. Trace data now
+   collectable via `--trace-json`; sizes the items below.
+2. ~~**O11 — progress output**~~ ✅ shipped 2026-04-28.
+3. ~~**N14 — ffmpeg stderr drain**~~ ✅ shipped 2026-04-28.
 4. **O1 — cache Runtime** — cheap, big win for interactive/short renders. Pair with N13 so caching doesn't silently pin 200 MB.
 5. **O7 — parallel chunked rendering at CLI** — cheap, 3–4× wins on long renders (real core headroom confirmed).
-6. **O9 — encoder quality knob** — cheap, prevents silent quality regressions.
-7. **N4 + N1 + N2 — per-frame allocator churn** — small, compounding wins once N9 proves eval/tess time is meaningful.
+6. ~~**O9 — encoder quality knob**~~ ✅ shipped 2026-04-28.
+7. **N4 + N1 + N2 — per-frame allocator churn** — small, compounding wins once N9 traces prove eval/tess time is meaningful.
 8. **O4 — tessellation cache** — medium cost, proportional benefit with scene complexity.
 9. **N6 — render/encode pipelining** — medium cost, probably the biggest 4K win before O6.
 10. **O3 — per-object submit refactor** — medium cost, unlocks many-object scenes (now with concrete 13k-submit evidence).
 11. **O6 / O8a — in-process encoder** — higher cost, only worth it at 1080p+.
 
-Items 1–6 are the fastest route to making every real-world render feel snappier and safer.
+Next perf pass should start with cache policy, not renderer internals:
+make cache writes optional/read-only or cheaper, then re-run the same
+trace set and pick between O1, O4, N6, O3 based on the remaining span
+shape.
