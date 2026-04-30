@@ -6,7 +6,7 @@
 
 Slice D shipped real strokes + the snapshot cache. The pipeline now renders multi-shape animated geometry end-to-end, but every "letter" is still a placeholder. Slice E adds the two content kinds that turn this into something an actual math-video author can use: plain text and LaTeX-flavored math. Both reduce to glyph outlines fed into the existing fill/stroke path; no new raster pipeline, no new IR shape beyond two new `MObjectKind` variants.
 
-Ship criteria: **(a)** `Text("Hello, world")` renders correctly to mp4 with a bundled default font, no system font dependency; **(b)** `Tex(r"\sum_{i=1}^n i = \frac{n(n+1)}{2}")` renders correctly using a pure-Rust math typesetter, with no system LaTeX install required; **(c)** both go through the snapshot cache like any other IR node.
+Ship criteria: **(a)** `Text("Hello, world")` renders correctly to mp4 with a bundled default font, no system font dependency; **(b)** `Tex(r"\sum_{i=1}^n i = \frac{n(n+1)}{2}")` renders correctly using a pure-Rust math typesetter, with no system LaTeX install required. (Per ADR 0009 the rgba pixel cache is gone; "second run hits cache" is no longer a ship criterion. The Tex `compile_tex` geometry cache and font cache — both keyed on source, not on `SceneState` — remain.)
 
 Read `docs/architecture.md`, `slice-d.md` (especially §11), and `reference/manimgl/manimlib/{tex,svg,utils/tex_file_writing.py}` first. This doc assumes them.
 
@@ -24,7 +24,7 @@ python -m manim_rs render examples.text_scene TextScene out.mp4 --duration 3 --f
 python -m manim_rs render examples.tex_scene TexScene out.mp4 --duration 4 --fps 30
 ```
 
-Both produce mp4s where the rendered glyphs visibly match the source string and expression. Second run of either completes in < 1s (cache hit), byte-identical output.
+Both produce mp4s where the rendered glyphs visibly match the source string and expression. Re-running the same command produces a deterministic mp4 (same bytes given same inputs) — but every run pays the full eval+raster+encode cost; the rgba pixel cache that previously made warm runs sub-second has been removed (ADR 0009).
 
 No system LaTeX. No system font. The wheel ships everything it needs.
 
@@ -52,7 +52,8 @@ No system LaTeX. No system font. The wheel ships everything it needs.
 | 3D text / extruded text / text-on-surface | Out. Slice F+ (3D pipeline). | |
 | SVG import (`SVGMobject`) | Out. Adjacent — the `BezPath` outlines for an SVG path are the same shape as a glyph outline — but pulling in an SVG parser is its own integration. | Possible mini-slice after E. |
 | RTL / Indic shaping | Out unless trivially free from `cosmic-text`. Not testing for it. | |
-| Cache integration | Free. New IR variants hash like any other node; the existing per-frame cache works without changes. | |
+| Pixel cache | **Removed mid-slice (ADR 0009).** Cold-render write cost dominated raster cost; warm wins were modest; on-disk store was GB-scale. Slice E no longer has a "cache hit" path to verify. | |
+| Tex / font caches | Source-keyed, in-process. `compile_tex` caches `(src, color) → Vec<Object>` per `Evaluator`; `manim-rs-text` caches font-id → leaked bytes. Both survive the pixel-cache removal because they're keyed on the source they derive from, not on `SceneState`. | ADR 0008 §B; ADR 0009 consequences. |
 | Snapshot tests | Tolerance-based (Slice C/D pattern). Two corpora: text rendering snapshots + a Tex coverage corpus of 30–50 expressions. | |
 | Platform | macOS arm64 dev box, Linux/lavapipe in CI (Slice D pattern, ADR 0007). | Unchanged. |
 | ADRs | **Two:** `0008-tex-via-ratex.md` (the load-bearing decision) and `0009-text-via-cosmic-text-swash.md` (briefer; choice is uncontroversial). | The Tex decision touches bus-factor, license, coverage gap, upgrade story; deserves its own record. |
@@ -122,51 +123,59 @@ Ordered. Each step ends with a testable artifact. Per Slice C §11 and Slice D's
 - Render a Tex scene to mp4 and check non-empty frame.
 - Recursive macro raises `ValueError`.
 
-### Step 6 — Tex coverage corpus
+### Step 6 — Tex coverage corpus + tolerance pinning
 
 - `tests/python/tex_corpus.py`: 30–50 expressions covering: `\frac`, `\sqrt`, sub/superscripts, `\sum_{i=1}^n`, `\int_a^b`, `\lim_{x \to 0}`, `\prod`, `\binom`, `\pmatrix`/`\bmatrix`/`\vmatrix`, `\begin{aligned}`, `\begin{cases}`, accents (`\hat`, `\tilde`, `\bar`, `\vec`), Greek lowercase + uppercase, `\mathbb{R}`/`\mathcal{L}`/`\mathfrak{g}`, big delimiters (`\left( \right)`, `\left\| \right\|`), spacing (`\,`, `\quad`), `\text{...}` inside math.
-- For each: snapshot test that renders to a single frame and tolerance-checks against a baseline rgba.
-- `docs/tex-coverage.md`: enumerate the supported subset, document known visible deltas vs. manimgl rendering, document `engine="latex"` as the future opt-in for full fidelity.
+- For each: snapshot test that uses `render_frame_to_png` (the single-frame API added mid-Step-5) to render one frame and tolerance-checks the rgba against a baseline PNG checked into `tests/python/snapshots/tex/`. Use the existing tolerance helper from Slice C/D — same max-Δ-per-channel + %-of-pixels-differing pair, no exact-pixel pins.
+- **Pin the tolerance numbers in this step.** Pick values that pass on macOS-arm64 dev *and* Linux/lavapipe CI (ADR 0007) for every expression in the corpus, then bake them into a single `TEX_SNAPSHOT_TOLERANCE` constant in the test module so future changes have to consciously re-baseline rather than silently relax.
+- Baselines are generated once with a `--update-snapshots` test flag (mirroring Slice D's pattern) and checked in. A bit-for-bit re-run on the same machine should succeed; cross-platform must succeed within tolerance.
+- `docs/tex-coverage.md`: enumerate the supported subset, document known visible deltas vs. manimgl rendering, document `engine="latex"` as the future opt-in for full fidelity. Note the tolerance values + rationale at the bottom so re-baseliners know what they're loosening.
 
-**Artifact:** `pytest tests/python/test_tex_corpus.py` green; coverage doc written.
+**Artifact:** `pytest tests/python/test_tex_corpus.py` green on macOS dev and Linux/lavapipe CI; coverage doc written; baseline PNGs + `TEX_SNAPSHOT_TOLERANCE` checked in.
 
 ### Step 7 — Python `Text()` via cosmic-text
 
 - `crates/manim-rs-text`: extend with `text_to_bezpaths(src: &str, font: &[u8], size: f32, weight: Weight, align: Align) -> Vec<(BezPath, Color)>`. Uses `cosmic-text` for shaping/layout, `swash` for outlines.
 - IR: `MObjectKind::Text { src, font: Option<PathBuf>, weight, size, color, align }`. `font: None` → bundled Inter Regular.
-- `crates/manim-rs-eval`: `Text` eval is time-invariant; same shape as Tex.
+- `crates/manim-rs-eval`: `Text` eval mirrors the Tex shape that actually shipped — fan out to per-glyph `ObjectState`s at `Evaluator::eval_at` (not "produce a Text node with internal BezPaths"), with a per-`Evaluator` `(src, font_id, size, weight, align, color) → Vec<Object>` cache keyed on the geometry-shaping subset only. Same `Box::leak`-under-write-lock pattern as the font cache (per the §11 cleanup-pass note); same minimal-cache-key discipline (per the post-Step-5 cleanup pass — `scale` and other per-instance transforms must not be in the key).
 - Python `python/manim_rs/objects/text.py`: `Text(src, *, font=None, weight="regular", size=1.0, color=WHITE, align="left")`.
+- Apply the visual-bug pre-empts Step 5 paid for: extract glyph outlines at `OUTLINE_PPEM = 1024` and post-multiply by `Affine::scale(size / 1024)` (same fix as Tex; ADR 0008 §C). Reuse `FILL_TOLERANCE = 0.001` (ADR 0008 §D) — don't fall back to lyon defaults.
+- GIL discipline: copy `&str` to `String` while holding the GIL, then `py.allow_threads` for shape+layout+outline (mirror the `tex_validate` cleanup-pass fix).
 
-**Artifact:** `tests/python/test_text.py` — `Text("Hello")` round-trips through IR, renders to mp4, frame non-empty. Bundled-font path works without any system font.
+**Artifact:** `tests/python/test_text.py` — `Text("Hello")` round-trips through IR, renders to mp4, frame non-empty; tolerance-snapshot one frame against a checked-in baseline PNG using the same `TEX_SNAPSHOT_TOLERANCE` from Step 6. Bundled-font path works without any system font.
 
-### Step 8 — Combined integration scene + cache verification
+### Step 8 — Combined integration scene + determinism check
 
-- `examples/text_scene.py`: a 3-second scene with a `Text(...)` greeting and a `Tex(...)` formula on screen simultaneously, both with non-default colors, one of them animated in opacity (proves time-evaluated state still works through the existing eval + cache).
+(Renamed from "+ cache verification" — the rgba pixel cache was deleted in ADR 0009; there's no cache hit/miss path to assert anymore.)
+
+- `examples/text_scene.py`: a 3-second scene with a `Text(...)` greeting and a `Tex(...)` formula on screen simultaneously, both with non-default colors, one of them animated in opacity (proves time-evaluated state still works for the Text+Tex fan-out shape, alongside an animated transform on a non-glyph mobject).
 - `tests/python/test_e2e_text_tex.py`:
-  - Cold render: produces mp4 with expected duration / fps / dimensions via `ffprobe`.
-  - Warm render: < 1s wall-clock, byte-identical mp4.
-  - `--no-cache`: same mp4, cold-render time.
-- Confirm `manim-rs-runtime`'s cache hashing handles the new IR variants without code change (Slice D's blake3-of-canonical-serde-bytes machinery is content-agnostic; this step verifies that promise).
+  - Render: produces mp4 with expected duration / fps / dimensions / codec / pix_fmt via `ffprobe`.
+  - **Determinism:** running the same command twice in a row on the same host produces byte-identical mp4. (No "warm < 1s" assertion — every run pays full cost now. The wall-clock floor is the encoder pipe + readback, not raster, per ADR 0009's perf table.)
+  - Confirm the in-process `compile_tex` cache and font cache still work: a scene with the same Tex expression appearing twice should populate `compile_tex` once. Add a counter / probe behind a test-only feature flag rather than asserting on timing.
+- Drop the `--no-cache` line; the flag was removed with the pixel cache.
 
-**Artifact:** the two acceptance commands in §1 green; `ffprobe` clean; cache behavior matches Slice D contract.
+**Artifact:** the two acceptance commands in §1 green; `ffprobe` clean; two consecutive runs byte-identical; `compile_tex` cache hit count == (Tex node count − unique source count) for a scene with intentional duplicates.
 
 ### Step 9 — ADRs, porting notes, performance log
 
-- `docs/decisions/0008-tex-via-ratex.md`:
-  - Why RaTeX over: Tectonic (C-build pain, network fetch), `pulldown-latex` + custom layout (3–5k LOC of work), Typst+MiTeX (heavyweight, syntax conversion). Independent second-opinion analysis converged.
-  - Bus-factor mitigation: small, MIT, vendorable in <1 day.
-  - Coverage gap acknowledged: KaTeX-subset, not full LaTeX.
-  - Pinned SHA recorded.
-  - `\newcommand` deferred to Python-side expansion; documented escalation path (vendor-and-patch parser).
-  - Triggers for re-eval: RaTeX abandonment, breaking DisplayList API change, a feature requirement that breaks Python-side macro expansion.
-- `docs/decisions/0009-text-via-cosmic-text-swash.md` — brief; standard Rust text stack, default font choice, override mechanism.
+ADR landscape changed since the original plan. What's already shipped:
+
+- `0008-slice-e-decisions.md` — consolidated Slice E decisions (Tex fan-out at eval, per-`Evaluator` Tex cache, swash hinting at high ppem, pinned `FILL_TOLERANCE`, single-frame render API). Shipped with Steps 1–5. The originally-planned `0008-tex-via-ratex.md` was folded into this consolidated doc, matching Slice D's pattern (and superseding §10's "two ADRs" guidance).
+- `0009-remove-pixel-cache.md` — pixel cache removal (replaces the originally-planned `0009-text-via-cosmic-text-swash.md` slot).
+- `0010-in-process-encoder.md`, `0011-hardware-encoder-portability.md` — perf push, off-slice but consumed numbers from N15/N16 traces taken during Slice E.
+
+Remaining Step 9 work:
+
+- **`docs/decisions/0012-text-via-cosmic-text-swash.md`** (renumbered from the planned 0009 — that slot is now taken). Brief: standard Rust text stack, default font choice (Inter Regular bundled), override mechanism, why cosmic-text over alternatives. Note the `OUTLINE_PPEM = 1024` + `FILL_TOLERANCE = 0.001` reuse from Tex (ADR 0008 §C/§D) so future readers don't re-hunt.
+- **`docs/decisions/0008-slice-e-decisions.md` addendum** — add a section recording what the slice plan got wrong about RaTeX upgrade triggers, bus-factor mitigation, and the `\newcommand` deferral, since those originally lived in the planned standalone Tex ADR. Keep brief.
 - `docs/porting-notes/tex.md` — invariants from RaTeX + manimgl `Tex`. What `\textcolor` does. Coordinate-system flip. Per-`DisplayItem`-color override semantics. SHA cited.
 - `docs/porting-notes/text.md` — cosmic-text vs. manimgl Pango: alignment semantics, default line-height, what's missing (RTL, Indic).
-- `docs/tex-coverage.md` — supported-subset reference (written in Step 6, expanded here with cross-links).
-- `docs/performance.md` — append: wheel size delta from bundled fonts, RaTeX parse+layout cost vs. eval+raster cost (likely negligible), any cache-key-cost observations.
-- `docs/gotchas.md` — any traps surfaced during the slice (RaTeX coordinate convention, font-name string brittleness, etc.).
+- `docs/tex-coverage.md` — written in Step 6; expand here with cross-links to ADR 0008 §C/§D (visual-bug fixes that shape what the corpus actually looks like) and to the tolerance-pinning rationale.
+- `docs/performance.md` — append: wheel size delta from bundled fonts, RaTeX parse+layout cost vs. eval+raster cost (likely negligible), `compile_tex` and font-cache hit-rate observations on the corpus run, any new traces captured. Note that any cache-key cost observations now apply to the *source-keyed* caches (Tex geometry, fonts) only — the rgba pixel cache is gone (ADR 0009).
+- `docs/gotchas.md` — already gained the two visual-bug entries from Step 5 (Lyon flatness, swash low-ppem hinting). Append any further Step 6/7 traps (e.g. cosmic-text font-database init cost per §6.7, RTL fallthrough behavior, snapshot-tolerance cross-platform skew).
 
-**Artifact:** all docs written; §10 retrospective in this file ready to fill on ship.
+**Artifact:** all docs written; §11 retrospective ready to fill on ship.
 
 ---
 
@@ -186,24 +195,24 @@ Belongs to Slice F+ or its own slice. Resist scope creep:
 - **Multiple text-font weights bundled.** Inter Regular only; users supply `font=` for bold/italic.
 - **Full `\textcolor` interaction with Manimax's color system.** Per-`DisplayItem` color works; deeper integration (LaTeX color → Manimax `set_color` semantics) deferred.
 - **Lyon-fill replacement / Loop-Blinn AA upgrade.** Slice D §4 carry-over; not bundled.
-- **Distributed / S3 cache, LRU eviction, parallel chunked render.** Slice D carry-over; still later.
+- **Distributed / S3 cache, parallel chunked render.** The local rgba pixel cache that these were once successors to is gone (ADR 0009). Any future raster-skip story should be designed fresh against `Runtime` caching (perf O1) and `eval_at`, not retrofitted onto the deleted cache.
 
 ---
 
 ## 5. Success Criteria
 
-- [ ] `maturin develop` builds cleanly; `pytest tests/python` and `cargo test --workspace --exclude manim-rs-py` all green.
-- [ ] Both commands in §1 produce `out.mp4`; second run completes in < 1s wall-clock with byte-identical output.
+- [ ] `maturin develop` builds cleanly; `pytest tests/python` and `cargo test --workspace` all green. (Cargo line drops the `--exclude manim-rs-py` because the extension-module gate is now feature-flagged — see CLAUDE.md "Day-to-day".)
+- [ ] Both commands in §1 produce `out.mp4`; running the same command twice in a row produces byte-identical output.
 - [ ] `ffprobe out.mp4` reports expected dimensions / fps / codec / pix_fmt for both commands.
 - [ ] Visually: `Text` renders a recognizable string; `Tex` renders the formula with correct fraction, sum, sub/superscript layout; both at expected colors.
 - [ ] No system LaTeX or system font installed on the CI runner; both commands still pass.
-- [ ] Tex coverage corpus (30–50 expressions) all snapshot-stable with tolerance baselines.
+- [ ] Tex coverage corpus (30–50 expressions) all snapshot-stable with a single pinned `TEX_SNAPSHOT_TOLERANCE` constant; baselines green on macOS-arm64 dev *and* Linux/lavapipe CI.
 - [ ] `Tex(src, macros={...})` expands no-arg macros end-to-end.
-- [ ] `--no-cache` skips the cache for Text and Tex scenes; output matches cached output.
-- [ ] `0008-tex-via-ratex.md` and `0009-text-via-cosmic-text-swash.md` written.
+- [ ] In-process `compile_tex` and font caches measurably hit on a Tex scene with duplicate sources (verified via test-only probe, not timing).
+- [ ] `0012-text-via-cosmic-text-swash.md` written; `0008-slice-e-decisions.md` addended with the originally-Tex-only items (RaTeX bus-factor, upgrade triggers, `\newcommand` escalation path).
 - [ ] `docs/tex-coverage.md` enumerates supported subset and known deltas vs. manimgl.
 - [ ] `docs/porting-notes/{tex,text}.md` written.
-- [ ] §10 retrospective filled before hand-off.
+- [ ] §11 retrospective filled before hand-off.
 
 ---
 
@@ -247,7 +256,7 @@ crates/
   manim-rs-eval/
     src/evaluator.rs           # add Text + Tex eval cases (time-invariant)
   manim-rs-runtime/
-    src/lib.rs                 # nothing — cache is content-agnostic
+    src/lib.rs                 # eval → raster → encode, no cache hop (ADR 0009)
 +   tests/tex_render.rs
   manim-rs-py/
     src/lib.rs                 # expose Text + Tex constructors
@@ -270,8 +279,8 @@ tests/python/
 + tex_corpus.py                # corpus fixture data
 
 docs/
-+ decisions/0008-tex-via-ratex.md
-+ decisions/0009-text-via-cosmic-text-swash.md
+  decisions/0008-slice-e-decisions.md   # consolidated, already shipped — Step 9 adds Tex bus-factor / upgrade-trigger addendum
++ decisions/0012-text-via-cosmic-text-swash.md   # 0009/0010/0011 taken (cache removal + encoder push)
 + porting-notes/tex.md
 + porting-notes/text.md
 + tex-coverage.md
@@ -316,11 +325,12 @@ Revisit after Slice E lands.
 
 To apply in this plan:
 
-- **Single consolidated ADR per slice** worked well in D. Slice E uses **two** ADRs because the Tex and Text decisions are independently load-bearing — Tex carries bus-factor / coverage / upgrade risk; Text is uncontroversial but worth recording. Don't overload `0008` with the Text choice.
-- **Cache key shape.** D learned that hashing evaluated state (not raw IR + index) was the right default. E's new IR variants are time-invariant so this distinction barely matters, but keep the same eval-state hashing path; don't fork.
-- **Snapshot-test rebaselining.** Tolerance-based, no exact-pixel pins. Same as D.
-- **"Expose to Python + use in test" collapsed per step.** Steps 4 and 5 each leave the surface usable from the language layer they target.
+- **Single consolidated ADR per slice** worked well in D. The plan originally called for *two* Slice E ADRs (Tex + Text); reality consolidated everything Tex-shaped into `0008-slice-e-decisions.md`, matching D. Step 9 picks up the Text ADR as `0012-text-via-cosmic-text-swash.md` (0009 was repurposed for pixel-cache removal, 0010/0011 for the encoder push).
+- **~~Cache key shape~~ → cache layer removed.** Slice D's blake3-of-canonical-serde-bytes pixel cache was deleted mid-Slice-E (ADR 0009): cold-render write cost dominated raster, warm wins were ~40 %, on-disk store was GB-scale. Slice E inherits the *replacement* discipline instead — source-keyed in-process caches (Tex geometry, font bytes) that derive from immutable inputs, not from `SceneState`. Cache-key minimality (post-Step-5 cleanup pass: `compile_tex` key shrank to `(src, color)` after `scale`/`macros` were caught spuriously included) is the lasting lesson, applied to those caches.
+- **Snapshot-test rebaselining.** Tolerance-based, no exact-pixel pins. Same as D. Step 6 pins a single `TEX_SNAPSHOT_TOLERANCE` constant for the whole corpus rather than per-expression knobs.
+- **"Expose to Python + use in test" collapsed per step.** Steps 4 and 5 each leave the surface usable from the language layer they target. Confirmed by ship.
 - **Pinned-SHA discipline.** RaTeX SHA pinned in Cargo.toml; if it advances mid-slice, re-pin and re-verify the corpus before merge.
+- **Single-frame render API as a debugging primitive.** Mid-Step-5 detour shipped `render_frame_to_png` (ADR 0008 §F) inline rather than parking. Step 6's tolerance baselining and Step 7's Text snapshot reuse it directly — the cost was repaid before Step 5 ended.
 
 ---
 
