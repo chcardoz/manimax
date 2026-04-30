@@ -1,18 +1,22 @@
-"""Slice C Step 7 — mandated end-to-end integration test.
+"""End-to-end integration test.
 
 Renders ``integration_scene.py`` via the CLI, verifies mp4 metadata, pulls
-two frames back as raw RGB, and checks:
+three frames back as raw RGB, and checks:
 
 - Tolerance-based pixel checksum (sum + nonzero count within ±10%).
-- Per-object centroid clustering by color band — each of the three objects
+- Per-object centroid clustering by color band — each of the four objects
   is distinguishable by its dominant color, so we can find its centroid on
   screen and assert it lands in the expected region.
+- Tail-frame existence: at t≈2.8s, blue and yellow have been faded out and
+  removed, while red and green persist. Catches a regression in
+  ``FadeOut`` / ``RemoveOp`` handling.
 
 The expected values were captured from a local render (macOS arm64, wgpu 29,
 Metal, ffmpeg h264/yuv420p). H.264 quantization and MSAA sample-pattern
 drift mean these are deliberately loose — they catch large-scale rendering
 regressions (object missing, animation stuck at t=0, wrong order of
-composition) without tripping on benign encoder/driver changes.
+composition, FadeOut not honored) without tripping on benign encoder/driver
+changes.
 """
 
 from __future__ import annotations
@@ -31,8 +35,8 @@ SCENE_FILE = Path(__file__).parent / "integration_scene.py"
 WIDTH = 480
 HEIGHT = 270
 FPS = 30
-DURATION = 2.0
-TOTAL_FRAMES = int(FPS * DURATION)  # 60
+DURATION = 3.0
+TOTAL_FRAMES = int(FPS * DURATION)  # 90
 
 
 def _have_ffmpeg() -> bool:
@@ -146,40 +150,45 @@ def test_ffprobe_metadata(rendered_mp4: Path) -> None:
 # Expected values captured on macOS arm64, Metal, wgpu 29, ffmpeg h264/yuv420p.
 # Tolerance is wide enough to absorb encoder drift but tight enough to catch
 # large regressions (object missing, stuck frame, composition order flip).
-EXPECTED_F30_SUM = 1_292_070
-EXPECTED_F30_NONZERO = 11_558
-EXPECTED_F55_SUM = 1_185_030
-EXPECTED_F55_NONZERO = 11_101
+EXPECTED_F15_SUM = 668_478
+EXPECTED_F15_NONZERO = 9_283
+EXPECTED_F45_SUM = 1_214_731
+EXPECTED_F45_NONZERO = 13_940
 CHECKSUM_TOLERANCE = 0.10  # ±10%
 
 # Centroid expectations — object positions at chosen frames.
-# Frame 30 (t=1.0s, mid-scene):
-#   Red square:   translated to world (-0.9, 0) → ~pixel (213, 135). Observed
-#                 (202, 136) — stroke tessellation pulls centroid slightly.
-#   Green teardrop: near origin → ~pixel (240, 135). Observed (241, 130).
-#   Blue triangle: ThereAndBack peak at world (+1.8, +0.4) → ~pixel (294, 123).
-#                 Observed (291, 118).
-EXPECTED_F30_CENTROIDS = {
-    "red": (202.0, 136.0),
+# Frame 15 (t=0.5s, mid-arrival, FadeIn ~half complete):
+#   Red square:   translating left toward (-0.9, 0) → ~pixel (204, 136).
+#   Green teardrop: home position → ~pixel (241, 130).
+#   Blue triangle: translating right toward (+0.9, 0) → ~pixel (268, 136).
+#   Yellow Tex (\pi): translating up toward (0, 0.475) → ~pixel (254, 98).
+EXPECTED_F15_CENTROIDS = {
+    "red": (204.0, 136.0),
     "green": (241.0, 130.0),
-    "blue": (291.0, 118.0),
+    "blue": (268.0, 136.0),
+    "yellow": (254.0, 98.0),
 }
-# Frame 55 (t=1.833s, near end):
-#   Red square:   translated further left → ~pixel (190, 135).
-#   Green teardrop: still near origin, scaled larger → ~pixel (241, 130).
-#   Blue triangle: ThereAndBack returning, near origin → ~pixel (230, 144).
-EXPECTED_F55_CENTROIDS = {
-    "red": (190.0, 135.0),
+# Frame 45 (t=1.5s, mid-flourish):
+#   Red square:   fully translated to (-1.8, 0) and partially rotated → (186, 135).
+#   Green teardrop: home + scale 1.3 + colorize partway → (241, 130).
+#   Blue triangle: peak of ThereAndBack at (1.8, 0.6) → (293, 123).
+#   Yellow Tex:   at (0, 0.95), under Wiggle rotation → (249, 90).
+EXPECTED_F45_CENTROIDS = {
+    "red": (186.0, 135.0),
     "green": (241.0, 130.0),
-    "blue": (230.0, 144.0),
+    "blue": (293.0, 123.0),
+    "yellow": (249.0, 90.0),
 }
 CENTROID_TOLERANCE_PX = 25.0
 
 # Color bands — tuned against H.264/yuv420p decoded frames so we tolerate
-# the chroma blur that subsampling introduces on solid colors.
+# the chroma blur that subsampling introduces on solid colors. The green
+# band is intentionally wider than red/blue/yellow because the teardrop
+# undergoes Colorize during phase 2 and ends up slightly cyan-ward.
 RED_BAND = ((140, 255), (0, 80), (0, 80))
-GREEN_BAND = ((0, 80), (180, 255), (50, 200))
+GREEN_BAND = ((0, 170), (150, 255), (30, 220))
 BLUE_BAND = ((0, 120), (0, 180), (150, 255))
+YELLOW_BAND = ((180, 255), (160, 255), (0, 100))
 
 
 def _check_centroids(
@@ -191,6 +200,7 @@ def _check_centroids(
         ("red", expected["red"], RED_BAND),
         ("green", expected["green"], GREEN_BAND),
         ("blue", expected["blue"], BLUE_BAND),
+        ("yellow", expected["yellow"], YELLOW_BAND),
     ):
         res = _centroid(data, band[0], band[1], band[2])
         assert res is not None, f"{label}: no {color} pixels found"
@@ -205,27 +215,61 @@ def _sum_and_nonzero(data: bytes) -> tuple[int, int]:
     return int(arr.sum()), int(np.count_nonzero(arr))
 
 
-def test_frame_30_pixel_checksum_and_centroids(rendered_mp4: Path) -> None:
-    data = _extract_frame_rgb(rendered_mp4, 30)
+def test_frame_15_pixel_checksum_and_centroids(rendered_mp4: Path) -> None:
+    data = _extract_frame_rgb(rendered_mp4, 15)
     total, nonzero = _sum_and_nonzero(data)
-    _assert_within(total, EXPECTED_F30_SUM, EXPECTED_F30_SUM * CHECKSUM_TOLERANCE, "f30 sum")
+    _assert_within(total, EXPECTED_F15_SUM, EXPECTED_F15_SUM * CHECKSUM_TOLERANCE, "f15 sum")
     _assert_within(
         nonzero,
-        EXPECTED_F30_NONZERO,
-        EXPECTED_F30_NONZERO * CHECKSUM_TOLERANCE,
-        "f30 nonzero",
+        EXPECTED_F15_NONZERO,
+        EXPECTED_F15_NONZERO * CHECKSUM_TOLERANCE,
+        "f15 nonzero",
     )
-    _check_centroids(data, EXPECTED_F30_CENTROIDS, "f30")
+    _check_centroids(data, EXPECTED_F15_CENTROIDS, "f15")
 
 
-def test_frame_55_pixel_checksum_and_centroids(rendered_mp4: Path) -> None:
-    data = _extract_frame_rgb(rendered_mp4, 55)
+def test_frame_45_pixel_checksum_and_centroids(rendered_mp4: Path) -> None:
+    data = _extract_frame_rgb(rendered_mp4, 45)
     total, nonzero = _sum_and_nonzero(data)
-    _assert_within(total, EXPECTED_F55_SUM, EXPECTED_F55_SUM * CHECKSUM_TOLERANCE, "f55 sum")
+    _assert_within(total, EXPECTED_F45_SUM, EXPECTED_F45_SUM * CHECKSUM_TOLERANCE, "f45 sum")
     _assert_within(
         nonzero,
-        EXPECTED_F55_NONZERO,
-        EXPECTED_F55_NONZERO * CHECKSUM_TOLERANCE,
-        "f55 nonzero",
+        EXPECTED_F45_NONZERO,
+        EXPECTED_F45_NONZERO * CHECKSUM_TOLERANCE,
+        "f45 nonzero",
     )
-    _check_centroids(data, EXPECTED_F55_CENTROIDS, "f55")
+    _check_centroids(data, EXPECTED_F45_CENTROIDS, "f45")
+
+
+# Tail frame: t≈2.8s, after FadeOut+remove on blue and yellow. Asserts
+# *existence* (or absence) per color band rather than centroid coords —
+# the goal is to catch a regression where FadeOut or RemoveOp stop
+# wiping objects from the active set.
+F84_PRESENT_PIXEL_THRESHOLD = 100  # red/green should have plenty
+F84_ABSENT_PIXEL_THRESHOLD = 10  # blue/yellow should be near-zero
+
+
+def test_frame_84_post_remove_active_set(rendered_mp4: Path) -> None:
+    data = _extract_frame_rgb(rendered_mp4, 84)
+
+    red = _centroid(data, *RED_BAND)
+    assert (
+        red is not None and red[2] >= F84_PRESENT_PIXEL_THRESHOLD
+    ), f"f84: red expected present (n>={F84_PRESENT_PIXEL_THRESHOLD}), got {red}"
+
+    green = _centroid(data, *GREEN_BAND)
+    assert (
+        green is not None and green[2] >= F84_PRESENT_PIXEL_THRESHOLD
+    ), f"f84: green expected present (n>={F84_PRESENT_PIXEL_THRESHOLD}), got {green}"
+
+    blue = _centroid(data, *BLUE_BAND)
+    blue_n = blue[2] if blue is not None else 0
+    assert (
+        blue_n < F84_ABSENT_PIXEL_THRESHOLD
+    ), f"f84: blue expected gone (n<{F84_ABSENT_PIXEL_THRESHOLD}), got n={blue_n}"
+
+    yellow = _centroid(data, *YELLOW_BAND)
+    yellow_n = yellow[2] if yellow is not None else 0
+    assert (
+        yellow_n < F84_ABSENT_PIXEL_THRESHOLD
+    ), f"f84: yellow expected gone (n<{F84_ABSENT_PIXEL_THRESHOLD}), got n={yellow_n}"
