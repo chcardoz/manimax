@@ -37,10 +37,10 @@ use ffmpeg_the_third as ffmpeg;
 
 /// Which h264 encoder backend to use.
 ///
-/// `Software` calls into libx264 (CPU encoding). `Hardware` requests the
-/// platform's hardware h264 encoder via libavcodec — currently
-/// `h264_videotoolbox` on macOS. If the requested backend isn't available
-/// in the linked libavcodec build, [`Encoder::start_with_options`] returns
+/// `Software` calls into libx264 (CPU encoding). `Hardware` walks an
+/// ordered list of platform hardware h264 encoders ([`HARDWARE_CANDIDATES`])
+/// and picks the first one present in the linked libavcodec build. If
+/// none is available, [`Encoder::start_with_options`] returns
 /// [`EncodeError::BackendUnavailable`].
 #[derive(Debug, Default, Clone, Copy, PartialEq, Eq)]
 pub enum EncoderBackend {
@@ -48,10 +48,18 @@ pub enum EncoderBackend {
     /// 4K (~60 ms/frame at 4K30 on M-series — see ADR 0010).
     #[default]
     Software,
-    /// Platform hardware encoder. macOS: `h264_videotoolbox`. Other
-    /// platforms not wired up yet.
+    /// Platform hardware encoder. Resolution order:
+    /// `h264_videotoolbox` (macOS) → `h264_nvenc` (Linux/Windows + Nvidia,
+    /// e.g. Modal/fly.io GPU machines). VAAPI/AMF can be appended when a
+    /// deploy target needs them.
     Hardware,
 }
+
+/// Hardware h264 encoder names tried, in order, when
+/// [`EncoderBackend::Hardware`] is requested. The first one present in the
+/// linked libavcodec wins; ordering is "most likely available where this
+/// binary is running" (macOS dev → Linux GPU deploy).
+const HARDWARE_CANDIDATES: &[&str] = &["h264_videotoolbox", "h264_nvenc"];
 
 /// Optional tuning knobs for the encoder.
 ///
@@ -82,7 +90,7 @@ pub enum EncodeError {
     Ffmpeg(#[from] ffmpeg::Error),
     #[error("h264 encoder unavailable in this libavcodec build")]
     EncoderUnavailable,
-    #[error("requested encoder backend ({0}) not available in this libavcodec build")]
+    #[error("requested encoder backend not available: {0}")]
     BackendUnavailable(&'static str),
     #[error("encoder worker thread terminated unexpectedly")]
     WorkerGone,
@@ -158,12 +166,16 @@ impl Encoder {
                 (codec, Pixel::YUV420P)
             }
             EncoderBackend::Hardware => {
-                // macOS hardware encoder via VideoToolbox. Linux/Windows
-                // hardware encoders (NVENC/AMF/QSV) not wired up yet — fall
-                // straight to BackendUnavailable rather than silently picking
-                // a non-VT codec.
-                let codec = ffmpeg::encoder::find_by_name("h264_videotoolbox")
-                    .ok_or(EncodeError::BackendUnavailable("h264_videotoolbox"))?;
+                // Walk HARDWARE_CANDIDATES; first codec linked into this
+                // libavcodec wins. macOS dev hits `h264_videotoolbox`;
+                // a Linux+Nvidia container hits `h264_nvenc`. Same NV12
+                // pixel format works for both.
+                let codec = HARDWARE_CANDIDATES
+                    .iter()
+                    .find_map(|name| ffmpeg::encoder::find_by_name(name))
+                    .ok_or(EncodeError::BackendUnavailable(
+                        "no hardware h264 encoder (tried h264_videotoolbox, h264_nvenc)",
+                    ))?;
                 (codec, Pixel::NV12)
             }
         };

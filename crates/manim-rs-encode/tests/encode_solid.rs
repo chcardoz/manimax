@@ -4,7 +4,7 @@
 use std::path::PathBuf;
 use std::process::Command;
 
-use manim_rs_encode::Encoder;
+use manim_rs_encode::{EncodeError, Encoder, EncoderBackend, EncoderOptions};
 
 const WIDTH: u32 = 480;
 const HEIGHT: u32 = 270;
@@ -170,4 +170,60 @@ fn solid_color_survives_yuv420p_roundtrip() {
     // yuv420p has no alpha channel — ffmpeg reconstructs it as 0xFF. Pin it
     // so a future pixel-format change doesn't silently degrade this test.
     assert_eq!(got[3], 0xFF, "alpha channel not opaque after roundtrip");
+}
+
+/// Hardware encoder smoke. Skips silently when no hardware h264 encoder
+/// is linked into libavcodec (lavapipe CI, generic Linux dev box, macOS
+/// without VT) so the same suite stays green everywhere. When a hw
+/// encoder *is* available — macOS via VideoToolbox today, NVENC on a
+/// future GPU container — green-cards the codec lookup, NV12 swscale
+/// path, and mux. Real perf measurement happens at deploy time, not in
+/// this in-tree test.
+#[test]
+fn hardware_encoder_writes_valid_mp4() {
+    let opts = EncoderOptions {
+        backend: EncoderBackend::Hardware,
+        ..Default::default()
+    };
+    let mut path = std::env::temp_dir();
+    path.push("manim_rs_encode_hw_smoke.mp4");
+    let _ = std::fs::remove_file(&path);
+
+    let mut enc = match Encoder::start_with_options(&path, WIDTH, HEIGHT, FPS, &opts) {
+        Ok(e) => e,
+        Err(EncodeError::BackendUnavailable(_)) => {
+            eprintln!("skipping hardware_encoder_writes_valid_mp4: no hw encoder linked");
+            return;
+        }
+        Err(e) => panic!("unexpected encoder start error: {e}"),
+    };
+
+    let frame: Vec<u8> = [0x40u8, 0x80, 0xc0, 0xff]
+        .into_iter()
+        .cycle()
+        .take((WIDTH * HEIGHT * 4) as usize)
+        .collect();
+    for _ in 0..FRAMES {
+        enc.push_frame(frame.clone()).expect("push_frame");
+    }
+    enc.finish().expect("finish ffmpeg");
+
+    assert!(path.exists(), "hw mp4 not written");
+
+    let probe = Command::new("ffprobe")
+        .args(["-v", "error", "-select_streams", "v:0"])
+        .args([
+            "-show_entries",
+            "stream=codec_name,nb_read_frames,width,height",
+        ])
+        .args(["-count_frames", "-of", "default=noprint_wrappers=1"])
+        .arg(&path)
+        .output()
+        .expect("run ffprobe");
+    assert!(probe.status.success(), "ffprobe failed: {:?}", probe);
+    let out = String::from_utf8_lossy(&probe.stdout);
+    assert!(out.contains("codec_name=h264"), "{out}");
+    assert!(out.contains(&format!("width={WIDTH}")), "{out}");
+    assert!(out.contains(&format!("height={HEIGHT}")), "{out}");
+    assert!(out.contains(&format!("nb_read_frames={FRAMES}")), "{out}");
 }
