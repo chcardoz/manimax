@@ -2,75 +2,56 @@
 
 **Last updated:** 2026-04-29
 **Current slice:** Slice E — Steps 1–5 shipped, Steps 6–9 remaining.
-This branch carries two perf PRs: pixel-cache removal (ADR 0009) and
-in-process encoder (ADR 0010), to be landed before resuming Step 6.
+This branch (`chcardoz/hello`) carries the perf + hardware-encoder
+work: pixel-cache removal (ADR 0009), in-process encoder (ADR 0010),
+and hardware h264 backend with VT→NVENC fallback (ADR 0011). Ready
+for PR; resume Slice E Step 6 after merge.
 
 ## Last session did
 
-Replaced the ffmpeg subprocess (`Command::spawn("ffmpeg") + stdin pipe`)
-with in-process libavcodec via `ffmpeg-the-third = "5"`. Motivating
-data after cache removal (N17): `encoder::finish` was 631 ms at 4K30
-cold — subprocess `wait()` on libx264's b-frame flush was the new tail.
+Added `EncoderBackend::Hardware` to `EncoderOptions`, exposed as
+`--encoder hardware` on the CLI. The backend walks `HARDWARE_CANDIDATES`
+(`h264_videotoolbox` → `h264_nvenc`) at session start and picks the
+first codec present in libavcodec. NV12 pixel format for both. Same
+binary works on macOS dev (VT) and Linux+Nvidia deploy (NVENC) without
+a code change.
 
-A naive single-threaded in-process encoder *regressed* throughput
-(1080p60 cold 3.11 → 3.17 s, 4K30 cold 1.36 → 1.76 s) because the
-subprocess was getting free OS-level parallelism. Solution: run the
-encoder on a worker thread fed by `mpsc::sync_channel(1)`. The producer
-hands an owned `Vec<u8>` per frame and continues immediately.
+Also rewrote the Python integration test scene to cover every
+author-facing surface shipped through Slice E:
 
-Changes:
+- All 3 mobjects (`Polyline`, `BezPath`, `Tex`)
+- All 5 BezPath verbs (the green teardrop alone uses every one)
+- All 6 transforms (`Translate`/`Rotate`/`ScaleBy`/`FadeIn`/`FadeOut`/`Colorize`)
+- 8 representative easings + the 4 Scene API methods
+  (`add`/`play`/`wait`/`remove`)
 
-- `crates/manim-rs-encode/src/lib.rs` rewritten end-to-end. Public
-  surface (`Encoder::start_with_options`, `push_frame`, `finish`,
-  `EncoderOptions`) preserved; `push_frame` now takes
-  `Vec<u8>` (was `&[u8]`) so the worker can encode without a
-  borrow on the producer side.
-- Workspace adds `ffmpeg-the-third = "5"` (LGPL via dynamic linking,
-  ffmpeg 8.1 on Homebrew). `ffmpeg-next` 7.x was unusable: bindgen looks
-  for `avfft.h`, removed in ffmpeg 8.
-- Mux subtleties pinned in code comments + ADR 0010: explicit
-  `stream.set_time_base(1/fps)` *before* `write_header`, re-read after
-  (mp4 muxer rewrites to `1/15360`); `packet.set_duration(1)` on every
-  packet (else `avg_frame_rate` reports `N/(N-1)`); read
-  `GLOBAL_HEADER` flag into a local before `add_stream`.
-- `SwsContext` is `!Send`, so the scaler is constructed *inside* the
-  worker thread closure.
-- ADR 0010 records the change.
+Three-phase 3 s timeline (arrival → flourish → depart-and-remove);
+frames 15/45 strict centroid checks, frame 84 existence-only check
+catches `FadeOut`/`RemoveOp` regressions.
 
 Verification:
 
-- `cargo test --workspace` green (114 tests across crates,
-  encode tests including pixel-roundtrip + the dropped-encoder zombie
-  test).
-- `maturin develop` rebuilt; `pytest tests/python` 110 passed.
-- Trace probes (post-worker-thread) vs subprocess baseline:
-
-  | Workload          | Subprocess | In-process (worker) | Δ      |
-  | ----------------- | ---------- | ------------------- | ------ |
-  | 1080p60 cold 2 s  | 3.11 s     | **2.56 s**          | −18 %  |
-  | 1080p60 warm 2 s  | ~3.10 s    | **2.48 s**          | −20 %  |
-  | 4K30 cold 0.5 s   | 1.36 s     | 1.52 s              | +12 %† |
-  | 4K30 cold 2.0 s   | ~5.4 s     | 5.69 s              | ≈      |
-
-  † Short 4K runs are encoder-throughput-bound, not architecture-bound:
-  per-frame encode is ~60 ms vs ~17 ms raster, so 13 of 15 frames drain
-  inside `finish`. Longer runs are at parity with subprocess. The
-  follow-on lever is hardware encoding (videotoolbox/nvenc), not more
-  pipeline work.
+- `cargo test --workspace`: green (5 encoder tests now, was 4 — new
+  `hardware_encoder_writes_valid_mp4` smoke gates on
+  `BackendUnavailable` and skips silently if no hw encoder is linked).
+- `pytest tests/python`: 111 passed (added integration test).
+- `--encoder hardware` perf on M-series macOS (VT vs libx264):
+  - 4K30 2 s: 10.6 s → **3.4 s** (~3×, CPU 134 % → 82 %)
+  - 1080p60 2 s: 2.42 s → 2.14 s (~12 %)
 
 ## Next action
 
-After this PR lands, resume **Slice E Step 6**: Tex coverage corpus +
+After PR lands, resume **Slice E Step 6**: Tex coverage corpus +
 tolerance snapshot pinning.
 
 Perf followups (now reframed):
 
-- N17 (encoder finish tail): closed by 0010 at 1080p; partially closed
-  at 4K (architecture neutral, encoder CPU is the wall).
-- O1 (cache `Runtime`) is the next big lever for short renders / interactive
+- N17 (encoder finish tail): closed by 0010 at 1080p; closed by 0011
+  at 4K via VT.
+- O1 (cache `Runtime`): next big lever for short renders / interactive
   use — unblocks PyRuntime (E3a).
-- Hardware encoder (videotoolbox on macOS) is the durable 4K lever; not
-  worth it before chunked-parallel (O7) ships.
+- Deploy-time NVENC validation on Modal/fly.io GPU containers (T4/A10/A100):
+  out of scope here; pre-wired so the deploy commit is pure infra.
 
 ## Blockers
 
