@@ -89,23 +89,34 @@ Analyze the diff to determine:
 - **Type**: What kind of change is this?
 - **Scope**: What area/module is affected?
 - **Description**: One-line summary of what changed (present tense, imperative mood, <72 chars)
+- **Body**: Default to **none**. Only add a body when the WHY is non-obvious to a reader six
+  months from now — e.g. a deletion (no diff line tells you why something was removed), a
+  workaround for a bug or upstream issue, an architectural call between credible alternatives,
+  a change motivated by something outside the diff (incident, deadline, ADR, perf number).
+  For routine code, docs, tests, or refactors, ship the title alone.
+- **Footer**: Issue references (`Closes #123`, `Refs #456`), `BREAKING CHANGE:`. Don't add
+  hand-wavy "generated with X" or summary footers unless the user asks.
 
 ### 4. Execute Commit
 
-```bash
-# Single line
-git commit -m "<type>[scope]: <description>"
+**Default — single line** (matches the "no body" default from Step 3):
 
-# Multi-line with body/footer
+```bash
+git commit -m "<type>[scope]: <description>"
+```
+
+**Only when Step 3's body criteria fired** — multi-line HEREDOC:
+
+```bash
 git commit -m "$(cat <<'EOF'
 <type>[scope]: <description>
 
-<optional body>
-
-<optional footer>
+<body — tight; ≤4 short lines or ≤6 short bullets>
 EOF
 )"
 ```
+
+PR descriptions belong in PR bodies, not commit messages.
 
 ### 5. Verify Commit
 
@@ -122,6 +133,8 @@ git status
 - Imperative mood: "fix bug" not "fixes bug"
 - Reference issues: `Closes #123`, `Refs #456`
 - Keep description under 72 characters
+- Default to a single-line commit (no body). Add a body only when the WHY is non-obvious — see Step 3.
+- Body length cap: ≤4 short lines or ≤6 short bullets. Don't restate what the diff already says.
 
 ## Git Safety Protocol
 
