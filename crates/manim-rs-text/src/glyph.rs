@@ -43,8 +43,17 @@ pub fn glyph_to_bezpath(font: &[u8], char_code: u32, scale: f32) -> BezPath {
     let Some(font_ref) = FontRef::from_index(font, 0) else {
         return BezPath::new();
     };
-
     let glyph_id = font_ref.charmap().map(char_code);
+    glyph_to_bezpath_by_id(font, glyph_id, scale)
+}
+
+/// Like [`glyph_to_bezpath`] but takes a pre-resolved glyph id. Used by the
+/// shaped-text path (cosmic-text already returned `glyph_id` from layout, so
+/// we skip the redundant charmap lookup).
+pub fn glyph_to_bezpath_by_id(font: &[u8], glyph_id: u16, scale: f32) -> BezPath {
+    let Some(font_ref) = FontRef::from_index(font, 0) else {
+        return BezPath::new();
+    };
 
     let mut ctx = ScaleContext::new();
     let mut scaler = ctx.builder(font_ref).size(OUTLINE_PPEM).build();

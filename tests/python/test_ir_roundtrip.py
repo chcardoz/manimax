@@ -246,6 +246,57 @@ def test_optional_stroke_and_fill_serialize_as_null() -> None:
     _rust.roundtrip_ir(encoded)
 
 
+def test_text_object_roundtrips_through_rust() -> None:
+    """`Object::Text` (Slice E Step 7) survives the Python ↔ Rust trip.
+
+    Mirrors the existing `Tex` coverage in `test_tex.py`. Text fan-out is
+    not implemented yet — this test just pins the IR wire shape.
+    """
+    scene = ir.Scene(
+        metadata=ir.SceneMetadata(
+            schema_version=ir.SCHEMA_VERSION,
+            fps=30,
+            duration=0.0,
+            resolution=ir.Resolution(width=16, height=16),
+            background=(0.0, 0.0, 0.0, 1.0),
+        ),
+        timeline=(
+            ir.AddOp(
+                t=0.0,
+                id=1,
+                object=ir.Text(
+                    src="Hello, world",
+                    font=None,
+                    weight="bold",
+                    size=1.5,
+                    color=(1.0, 0.5, 0.25, 1.0),
+                    align="center",
+                ),
+            ),
+            ir.AddOp(
+                t=0.0,
+                id=2,
+                object=ir.Text(
+                    src="abc",
+                    font="Inter",
+                    weight="regular",
+                    size=1.0,
+                    color=(1.0, 1.0, 1.0, 1.0),
+                    align="left",
+                ),
+            ),
+        ),
+        tracks=(),
+    )
+    encoded = ir.encode(scene).decode("utf-8")
+    assert '"kind":"Text"' in encoded
+    assert '"weight":"bold"' in encoded
+    assert '"align":"center"' in encoded
+    rust_echoed = _rust.roundtrip_ir(encoded)
+    back = ir.decode(rust_echoed)
+    assert back == scene
+
+
 def test_ir_decode_accepts_str_and_bytes() -> None:
     """`ir.decode` advertises ``bytes | str``; both must round-trip identically."""
     scene = _wide_scene()
@@ -262,7 +313,7 @@ def test_ir_decode_accepts_str_and_bytes() -> None:
 
 _UNKNOWN_FIELD_SITES = [
     # (description, needle present in wide-scene payload, replacement)
-    ("metadata", '"schema_version":2', '"schema_version":2,"extra":"nope"'),
+    ("metadata", '"schema_version":3', '"schema_version":3,"extra":"nope"'),
     ("add_op", '"op":"Add"', '"op":"Add","extra":"nope"'),
     ("remove_op", '"op":"Remove"', '"op":"Remove","extra":"nope"'),
     ("polyline", '"kind":"Polyline"', '"kind":"Polyline","extra":"nope"'),

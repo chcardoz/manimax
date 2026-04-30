@@ -6,8 +6,10 @@
 //! end up in `glyph_to_bezpath` to produce Manimax-convention outlines
 //! (y-up, fill-ready).
 
+mod cosmic;
 mod font;
 mod glyph;
 
+pub use cosmic::{TextAlign, TextWeight, text_to_bezpaths};
 pub use font::{default_text_font, katex_font};
-pub use glyph::glyph_to_bezpath;
+pub use glyph::{glyph_to_bezpath, glyph_to_bezpath_by_id};

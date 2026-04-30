@@ -23,7 +23,10 @@ use serde::{Deserialize, Serialize};
 /// - v1 (Slice B–D): `Polyline` + `BezPath` objects.
 /// - v2 (Slice E Step 3): adds `Object::Tex` carrying source string +
 ///   user-supplied macros, expanded to BezPaths at eval time.
-pub const SCHEMA_VERSION: u32 = 2;
+/// - v3 (Slice E Step 7): adds `Object::Text` carrying a plain-text source
+///   shaped via cosmic-text, expanded to BezPaths at eval time. Mirrors
+///   `Object::Tex` in shape (source-keyed cache, eval-time fan-out).
+pub const SCHEMA_VERSION: u32 = 3;
 
 /// Scene-time in seconds. `f64` matches msgspec's number type.
 pub type Time = f64;
@@ -180,6 +183,46 @@ pub enum Object {
         /// `WORLD_UNITS_PER_EM`. `1.0` is identity.
         scale: f32,
     },
+    /// Plain-text source. The Rust eval layer shapes this once via
+    /// cosmic-text + swash and emits one filled `BezPath` per glyph,
+    /// mirroring how `Object::Tex` is expanded. The cache key is the
+    /// content tuple `(src, font, weight, size, color, align)` —
+    /// `scale` is not part of the IR (parent transforms apply at
+    /// `ObjectState`-build time, same as `Tex`).
+    ///
+    /// `font = None` means the bundled Inter Regular family. A future
+    /// non-`None` value would be a user-registered family name; the
+    /// resolution path is reserved for S7c/S7f and not wired up yet.
+    Text {
+        src: String,
+        font: Option<String>,
+        weight: TextWeight,
+        /// Em size in world units. `size = 1.0` means one em equals one
+        /// world unit (the same convention `Tex`'s `WORLD_UNITS_PER_EM`
+        /// resolves to at `scale = 1.0`).
+        size: f32,
+        color: RgbaSrgb,
+        align: TextAlign,
+    },
+}
+
+/// Shaped-text weight knob. `Bold` requires a registered bold face; with
+/// only Inter Regular bundled, cosmic-text falls back to synthesized bold
+/// or to Regular. Documented coverage gap per `manim-rs-text`.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "lowercase")]
+pub enum TextWeight {
+    Regular,
+    Bold,
+}
+
+/// Shaped-text alignment. `Justified` deliberately omitted (Slice E §4).
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "lowercase")]
+pub enum TextAlign {
+    Left,
+    Center,
+    Right,
 }
 
 /// Add-or-remove event keyed by `(t, id)`. The evaluator replays these to
@@ -449,10 +492,47 @@ mod tests {
     }
 
     #[test]
-    fn schema_version_is_two() {
+    fn schema_version_is_three() {
         // Wire-format guard: bumping forgets to update the Python mirror
         // unless someone reads this test failure first.
-        assert_eq!(SCHEMA_VERSION, 2);
+        assert_eq!(SCHEMA_VERSION, 3);
+    }
+
+    #[test]
+    fn text_object_roundtrips() {
+        let obj = Object::Text {
+            src: "Hello, world\nLine two".to_string(),
+            font: None,
+            weight: TextWeight::Bold,
+            size: 1.5,
+            color: [1.0, 0.5, 0.25, 1.0],
+            align: TextAlign::Center,
+        };
+        let json = serde_json::to_string(&obj).unwrap();
+        assert!(json.contains(r#""kind":"Text""#), "got {json}");
+        assert!(json.contains(r#""weight":"bold""#), "got {json}");
+        assert!(json.contains(r#""align":"center""#), "got {json}");
+        let back: Object = serde_json::from_str(&json).unwrap();
+        assert_eq!(obj, back);
+    }
+
+    #[test]
+    fn text_object_with_named_font_roundtrips() {
+        // Reserves wire shape for S7c/S7f's user-registered fonts. Even
+        // though resolution is not wired up yet, the field must round-trip
+        // cleanly so the IR doesn't have to bump again later.
+        let obj = Object::Text {
+            src: "abc".to_string(),
+            font: Some("Inter".to_string()),
+            weight: TextWeight::Regular,
+            size: 1.0,
+            color: [1.0, 1.0, 1.0, 1.0],
+            align: TextAlign::Left,
+        };
+        let json = serde_json::to_string(&obj).unwrap();
+        assert!(json.contains(r#""font":"Inter""#), "got {json}");
+        let back: Object = serde_json::from_str(&json).unwrap();
+        assert_eq!(obj, back);
     }
 
     #[test]

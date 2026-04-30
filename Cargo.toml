@@ -29,10 +29,14 @@ manim-rs-text = { path = "crates/manim-rs-text" }
 manim-rs-tex = { path = "crates/manim-rs-tex" }
 
 # Text + glyph outlines (Slice E).
-# swash: shaping + glyph outlines. kurbo: BezPath used everywhere as the
-# geometry exchange type.
+# swash: glyph outlines (used by both Tex and Text paths). kurbo: BezPath
+# used everywhere as the geometry exchange type. cosmic-text: shaping +
+# layout for the plain-text half (Step 7); uses swash internally so the
+# rasterization path stays unified. 0.x versioned — bumps are breaking
+# even for minor versions, so re-run text tests on any update.
 swash = "0.2"
 kurbo = "0.11"
+cosmic-text = "0.19"
 
 # RaTeX (KaTeX-equivalent pure-Rust math typesetting). Pinned to a SHA on
 # `main` because the project doesn't publish to crates.io and v0.1.x is young
