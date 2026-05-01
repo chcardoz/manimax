@@ -61,4 +61,29 @@ nav:
   - Home: index.md
   - Getting started: getting-started.md
   - Examples: examples.md
+  - Concepts:
+      - Overview: concepts/index.md
+      - Architecture: concepts/architecture.md
+      - IR schema: concepts/ir-schema.md
   - Reference: reference.md
+  - Design notes:
+      - Index: design/index.md
+      - ManimGL fidelity: design/manimgl-fidelity.md
+      - Why an IR: design/why-an-ir.md
+      - Wire format: design/wire-format.md
+      - Internally-tagged unions: design/internally-tagged-unions.md
+      - Pixel cache (removed): design/pixel-cache.md
+      - In-process encoder: design/encoder-in-process.md
+      - Hardware encoder: design/encoder-hardware.md
+      - Text stack: design/text-stack.md
+      - CI on lavapipe: design/ci-lavapipe.md
+      - Slice C decisions: design/slice-c-decisions.md
+      - Slice D decisions: design/slice-d-decisions.md
+      - Slice E decisions: design/slice-e-decisions.md
+  - Changelog: changelog.md
+  - Roadmap: roadmap.md
+  - Contributing:
+      - Overview: contributing/index.md
+      - Porting from ManimGL: contributing/porting-from-manimgl.md
+      - Gotchas: contributing/gotchas.md
+      - Performance: contributing/performance.md

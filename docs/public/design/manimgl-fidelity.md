@@ -22,7 +22,7 @@ When a design choice has a "technically correct" answer and a "manimgl-compatibl
 
 ## Precedents set by this rule
 
-- **sRGB floats for all color.** Linear would be correct; manimgl's entire palette tuning is in sRGB. See `docs/ir-schema.md` + Slice B §2.
+- **sRGB floats for all color.** Linear would be correct; manimgl's entire palette tuning is in sRGB. See `../concepts/ir-schema.md` + Slice B §2.
 - **`Vec3` coordinates everywhere, even in 2D scenes.** `Vec2` would be more honest; manimgl uses 3D points universally (Z unused in 2D scenes) and every `animation/` algorithm matches that shape. See `crates/manim-rs-ir/src/lib.rs`.
 
 ## Rejected alternatives
@@ -37,6 +37,6 @@ Legitimate reasons to diverge, each of which warrants a new ADR:
 
 - Performance: if matching manimgl forces an algorithm that can't be parallelized, we own that divergence explicitly.
 - Type safety: where manimgl relies on Python duck-typing in a way that can't be expressed in Rust without pervasive `enum`/`dyn`.
-- Architectural thesis: anything where matching manimgl would re-couple frames (see `docs/porting-notes/eval.md` purity contract).
+- Architectural thesis: anything where matching manimgl would re-couple frames (see `../contributing/porting-from-manimgl.md#evaluator` purity contract).
 
 Everything else: match manimgl.

@@ -23,7 +23,7 @@ Both sides also set `deny_unknown_fields` / `forbid_unknown_fields=True`.
 
 - **Buys:** zero-ambiguity wire format, self-describing IR, symmetric encode/decode tests are trivial.
 - **Locks in:** adding a variant requires editing both the Rust enum *and* the msgspec struct list; codegen is deferred to a later slice.
-- **Compatible with the "hand-mirror Python and Rust structs" approach** from `docs/architecture.md` §6.
+- **Compatible with the "hand-mirror Python and Rust structs" approach** from `../concepts/architecture.md` §6.
 
 ## Rejected alternatives
 

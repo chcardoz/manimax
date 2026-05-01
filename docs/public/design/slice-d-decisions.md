@@ -201,7 +201,7 @@ mismatch is treated as a miss. **No eviction, no size caps, no LRU.**
 
 ### Consequences
 - 1080p60 × 30s = ~11 GB of raw RGBA. Flagged in
-  `docs/performance.md`: zstd compression is a future lever
+  `../contributing/performance.md`: zstd compression is a future lever
   worth ~4–5× savings at modest CPU cost.
 - No cross-machine or S3 layer. `MANIM_RS_CACHE_DIR` can point at a
   shared path but we don't coordinate writes beyond the atomic

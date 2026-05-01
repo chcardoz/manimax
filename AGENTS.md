@@ -17,17 +17,21 @@ ManimGL treats scene code as the renderer — to get frame 1000, you re-run the 
 
 ## Status
 
-**Slice B shipped** (end-to-end: Python → IR → Rust eval → wgpu raster → ffmpeg mp4). The full architecture, stack decisions, research, and reasoning live in `docs/architecture.md`. Read that first, then `STATUS.md` for what's being worked on right now.
+**Slices B → E shipped** (end-to-end: Python → IR → Rust eval → wgpu raster → in-process libavcodec → mp4). Real strokes, fills, snapshot caches, text via cosmic-text + swash, math via RaTeX. The full docs site is in `docs/public/` (also published via mkdocs). Read it first, then `STATUS.md` for what's being worked on right now.
 
 ## Read before you touch anything
 
-1. `docs/architecture.md` — the dense context dump. Architecture, stack decisions, research summary, what was ruled out and why, what to build first.
-2. `docs/ir-schema.md` — (TODO) the IR specification. Source of truth for the Python↔Rust contract.
-3. `docs/decisions/` — numbered decision records (`NNNN-slug.md`, ADR-lite). Read these before changing anything a prior decision touched. **Write a new one** when you pick between credible alternatives (library X vs Y, schema shape, protocol, scope boundary) or make any choice a future agent might reasonably try to undo. Use the next unused number. Two shapes — atomic (~10 lines, one decision) or consolidated per-slice (150–300 lines, sectioned A/B/C). Templates and examples in `docs/decisions/README.md`.
-4. `docs/slices/` — execution plans for each end-to-end vertical slice. Start with the latest active slice. Completed slices append a **Retrospective** section (what surprised us, what the plan got wrong) — read it before writing the next slice's plan. Each slice plan pins scope, work breakdown, success criteria, and explicit out-of-scope — the **what to build now**, as opposed to `architecture.md`'s **what the system is**.
-5. `docs/gotchas.md` — aggregator of non-obvious traps (API deltas, shell quirks, invariants that bite). Skim this before starting a session in an unfamiliar subsystem. Add an entry any time you lose >15 minutes to a trap not already listed.
-6. `docs/performance.md` — running list of perf observations and ideas to batch into a future performance pass. **If you notice anything perf-relevant (slow path, unused lever, measurement), append an entry there** rather than acting on it in isolation.
-7. `STATUS.md` — current state of work in progress: active slice, what the last session did, next action, blockers. **Read this last** (it's the freshest) and **rewrite it at the end of every session** before handing back. Keep it under ~50 lines; anything larger probably belongs in a slice plan or porting note.
+All paths below are inside `docs/public/`.
+
+1. `concepts/architecture.md` — the dense context dump. Architecture, stack decisions, research summary, what was ruled out and why.
+2. `concepts/ir-schema.md` — the Python↔Rust contract.
+3. `design/` — numbered decision records (`NNNN-slug.md` rewritten with descriptive slugs). Read before changing anything a prior decision touched. **Write a new one** when you pick between credible alternatives (library X vs Y, schema shape, protocol, scope boundary) or make any choice a future agent might reasonably try to undo. Two shapes — atomic (~10 lines, one decision) or consolidated per-slice (150–300 lines, sectioned A/B/C). Index in `design/index.md`.
+4. `changelog.md` — what shipped slice by slice, with retrospectives ("what surprised us, what the plan got wrong"). Read the most recent before planning the next slice.
+5. `contributing/gotchas.md` — non-obvious traps (API deltas, shell quirks, invariants that bite). Skim before starting in an unfamiliar subsystem. Add an entry any time you lose >15 minutes to a trap not already listed.
+6. `contributing/performance.md` — running list of perf observations and ideas to batch into a future performance pass. **If you notice anything perf-relevant (slow path, unused lever, measurement), append an entry there** rather than acting on it in isolation.
+7. `contributing/porting-from-manimgl.md` — per-subsystem porting notes (one `##` per subsystem). Read the relevant section before porting a manimgl-adjacent feature.
+8. `roadmap.md` — deferred work with concrete triggers for revisiting.
+9. `STATUS.md` (repo root) — current state of work in progress: active slice, what the last session did, next action, blockers. **Read this last** (it's the freshest) and **rewrite it at the end of every session** before handing back. Keep it under ~50 lines; anything larger probably belongs in a design note or the changelog.
 
 ## Dev commands
 
@@ -66,9 +70,12 @@ python -m manim_rs render /tmp/out.mp4 --duration 2 --fps 30
 ffprobe -v error -select_streams v:0 -count_frames \
   -show_entries stream=width,height,avg_frame_rate,codec_name,pix_fmt,nb_read_frames \
   -of default=noprint_wrappers=1 /tmp/out.mp4
+
+# Preview the docs site locally (live-reload). Opens at http://127.0.0.1:8000/manimax/
+NO_MKDOCS_2_WARNING=true mkdocs serve
 ```
 
-**Gotcha:** when chaining `source .venv/bin/activate` with other commands via `;`, the activation may not resolve `.venv` from the repo root. Prefer either (a) activation as the first `&&`-chained command, or (b) an absolute path to `.venv/bin/activate`. See `docs/gotchas.md`.
+**Gotcha:** when chaining `source .venv/bin/activate` with other commands via `;`, the activation may not resolve `.venv` from the repo root. Prefer either (a) activation as the first `&&`-chained command, or (b) an absolute path to `.venv/bin/activate`. See `docs/public/contributing/gotchas.md`.
 
 ## Working rhythm
 
@@ -90,7 +97,7 @@ Once you've checked (or been waived) once in a session, you don't need to re-che
 
 ## Quick pointers
 
-- **Language split:** Python authoring → IR → Rust runtime (eval + wgpu raster + ffmpeg encode). See `docs/architecture.md` §2–§5 for the full stack and version pins.
+- **Language split:** Python authoring → IR → Rust runtime (eval + wgpu raster + ffmpeg encode). See `docs/public/concepts/architecture.md` §2–§5 for the full stack and version pins.
 - **Repo separation:** Manimax is independent of Divita. Divita consumes Manimax as a pip dependency.
 
 ## Reference code: ManimGL
@@ -110,7 +117,7 @@ Contributors cloning fresh: `git clone --recurse-submodules`, or `git submodule 
 
 ### Porting practices
 
-1. **Porting notes.** When you port a subsystem, drop a short `docs/porting-notes/<subsystem>.md` capturing invariants, API shape, and edge cases that aren't obvious from the manimgl source. 200–500 words. These compound — over time they become the primary reference and the submodule fades to a fallback.
+1. **Porting notes.** When you port a subsystem, append a `## <subsystem>` section to `docs/public/contributing/porting-from-manimgl.md` capturing invariants, API shape, and edge cases that aren't obvious from the manimgl source. 200–500 words. These compound — over time they become the primary reference and the submodule fades to a fallback.
 2. **Distinctive stub labels.** Use `PORT_STUB_MANIMGL_<subsystem>` (not `TODO`) for placeholder Rust waiting on a real port. Greppable, unambiguous.
 3. **Per-function attribution.** When porting a non-trivial algorithm, put a short header comment on the Rust function: manimgl source file + commit SHA + one-line note. Answers "which manimgl version does this match?" at the function level; also satisfies MIT attribution.
 4. **Literal-first translation.** First pass keeps manimgl's variable names and control flow even if it's ugly Rust. Only refactor to idiomatic Rust after it works. Eliminates "logic bug vs. porting bug" ambiguity.

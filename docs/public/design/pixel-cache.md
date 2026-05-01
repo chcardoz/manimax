@@ -21,7 +21,7 @@ read-side or write-side cache step.
 ## Why
 
 - **Cold renders are dominated by the cache write itself**, not by the
-  work the cache is supposed to skip. Trace probes (`docs/performance.md`
+  work the cache is supposed to skip. Trace probes (`../contributing/performance.md`
   N16, 2026-04-29): at 1080p60 cold the per-frame `cache::put` is 52.8 ms
   vs raster 7.7 ms; at 4K30 cold it is 340.7 ms vs raster 19.9 ms. The
   cache is more expensive than the thing it caches at every interesting

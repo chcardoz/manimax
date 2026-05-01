@@ -299,7 +299,7 @@ tolerance and assume CI will pass — it won't.
 
 Fix: `crates/manim-rs-raster/src/tessellator.rs` pins `FILL_TOLERANCE = 0.001` (1‰ of an em). Empirically smooth across the scales tested in Slice E.
 
-Trade-off: tessellation cost scales with `1 / sqrt(tolerance)`, so 0.25→0.001 is ~16× more curve segments per glyph. Hasn't bitten yet but logged in `docs/performance.md` as a future per-Object knob.
+Trade-off: tessellation cost scales with `1 / sqrt(tolerance)`, so 0.25→0.001 is ~16× more curve segments per glyph. Hasn't bitten yet but logged in `../contributing/performance.md` as a future per-Object knob.
 
 If you see "geometric octagons, identical at every zoom level" → flatness tolerance. If you see "stair-stepping that gets coarser as you zoom in" → swash hinting (previous entry). They look superficially similar at one resolution and you can have both at once.
 

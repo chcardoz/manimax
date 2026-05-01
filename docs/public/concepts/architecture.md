@@ -1,9 +1,8 @@
-# Manimax — Architecture, Stack, and Design Context
+# Architecture
 
-**Date of last update:** 2026-04-30
-**Context:** This document is the full dump of every decision, rejected option, and piece of research that led to the current architecture. It exists because the previous conversation was long and the next agent needs to pick up cold. Read this completely before proposing any change.
+The full dump of every decision, rejected option, and piece of research behind the current stack. Read this before proposing any architectural change.
 
-**Currency note:** Section 9 "What Gets Built First" is historical — Slices B/C/D/E have all shipped. For current decisions read `docs/decisions/` (especially 0008–0012); for what's in flight read `STATUS.md`. The stack pins in §5 / §6 are still authoritative — flag if any have rotted.
+**Currency note:** §9 "What Gets Built First" is historical — Slices B/C/D/E have all shipped. For current decisions read [Design notes](../design/index.md); for what's in flight read `STATUS.md` at the repo root. The stack pins in §5 / §6 are still authoritative.
 
 ---
 
@@ -130,7 +129,7 @@ On the Rust side:
 - Separate evaluation from rasterization — same `SceneState` rasterizes at any quality.
 - Snapshots are cheap checkpoints so `frame_at(t)` doesn't replay from 0.
 
-Read `docs/ir-schema.md` for the authoritative schema (to be written). Read the original specs at `../mogadishu/docs/superpowers/specs/2026-04-20-compiled-renderer-*.md` for longer-form rationale.
+Read [IR schema](ir-schema.md) for the authoritative schema.
 
 ---
 
@@ -467,7 +466,7 @@ manimax/
 
 Goal: shortest end-to-end slice that proves the pipeline.
 
-1. **Freeze the IR schema.** Write `docs/ir-schema.md` and `schemas/ir.schema.json`. Types only: scene metadata, object table with a single kind (polyline), timeline ops (add/remove), one property track (position). No text, no 3D, no snapshots yet. **Once this is frozen, Python and Rust can proceed in parallel.**
+1. **Freeze the IR schema.** Write [IR schema](ir-schema.md) and `schemas/ir.schema.json`. Types only: scene metadata, object table with a single kind (polyline), timeline ops (add/remove), one property track (position). No text, no 3D, no snapshots yet. **Once this is frozen, Python and Rust can proceed in parallel.**
 2. **Python Scene + Polyline + play + wait** — just enough to emit an IR with one polyline that moves. Stub everything else.
 3. **Rust IR deserialization** — parse the IR into serde structs. Round-trip test.
 4. **Rust evaluator** — `eval_at(ir, t) -> SceneState` for the polyline-only IR.
@@ -504,19 +503,7 @@ These were discussed at length and rejected for v1. Revisit only with reason.
 
 ---
 
-## 11. Research Artifacts Referenced
-
-Lives in `../mogadishu/research/` and `../mogadishu/docs/superpowers/specs/`:
-
-- `research/next-gen-renderer.md` — the ambitious "Vello + NVENC + SDF + 10-60x speedup" vision. **Useful for direction, but its numbers were not fully verified. Specifically: the "20ms glReadPixels" claim doesn't match ManimGL's actual code (which does a single `draw_fbo.read()`, more like 3-5ms on modern GPUs). The "render 1hr video in 40s with 20 workers" claim assumes NVENC zero-copy integration that doesn't exist cleanly with wgpu as of 2026.**
-- `research/manim-llm-papers.md` — LLM + Manim literature review; orthogonal to renderer work but context for Divita side.
-- `research/voiceover-and-rendering.md` — narration/TTS pipeline, Divita's concern.
-- `research/wip-approach.md` — RL-trained Manim agent design; Divita's concern.
-- `docs/superpowers/specs/2026-04-20-compiled-renderer-strategy.md` — the strategy doc. Why Python-frontend + Rust-backend + IR.
-- `docs/superpowers/specs/2026-04-20-compiled-renderer-ir-and-api.md` — the concrete IR + Python API spec. Inform `docs/ir-schema.md`.
-- `docs/superpowers/specs/2026-04-20-multi-scene-parallel-render-design.md` — Divita's multi-scene parallel design. Orthogonal, but the motivation (Modal timeout) evaporates when Manimax is fast.
-
-### Prior art worth studying
+## 11. Prior art worth studying
 - **[3b1b/manim (ManimGL)](https://github.com/3b1b/manim)** — cloned at `/Users/chcardoz/development/manimgl-ref/`. Source of truth for authoring API feel and shader math.
 - **[pydantic-core](https://github.com/pydantic/pydantic-core)** — closest architectural match (Python builds IR → Rust compiles/executes).
 - **[rerun](https://github.com/rerun-io/rerun)** — Python SDK + Rust runtime, production-grade.
@@ -566,9 +553,8 @@ This was fact-checked in April 2026 via web research. Flag any of these if they 
 
 ## 14. What This Document Is Not
 
-- Not a step-by-step implementation guide. That's for `docs/ir-schema.md`, `docs/authoring.md`, `docs/pipelines.md` (to be written).
-- Not a final API freeze. The Python surface and IR schema will iterate once real scenes start going through.
-- Not the Divita plan. Divita is a separate project that will consume Manimax.
+- Not a step-by-step implementation guide — see [Porting from ManimGL](../contributing/porting-from-manimgl.md) for per-subsystem notes.
+- Not a final API freeze. The Python surface and IR schema will iterate.
 
 ---
 
@@ -580,4 +566,4 @@ This was fact-checked in April 2026 via web research. Flag any of these if they 
 - **wgpu** over tiny-skia/Vello because it's the only Rust stack supporting 2D + 3D in one codebase without alpha deps.
 - **Stack is verified current** as of April 2026. Rust 1.95 / edition 2024 / wgpu 29 / pyo3 0.23 (pinned; 0.28 is upstream current) / maturin 1.13.1 / Python 3.11+.
 - **Separate repo from Divita.** Manimax is a standalone library.
-- **Slices B → E shipped.** Python authoring → IR → Rust eval → wgpu raster → in-process libavcodec → mp4. Real strokes, fills, snapshot caches, text (cosmic-text + swash), and math (RaTeX). See `docs/slices/`, `docs/decisions/`, and `STATUS.md`.
+- **Slices B → E shipped.** Python authoring → IR → Rust eval → wgpu raster → in-process libavcodec → mp4. Real strokes, fills, snapshot caches, text (cosmic-text + swash), and math (RaTeX). See the [changelog](../changelog.md), [design notes](../design/index.md), and `STATUS.md`.

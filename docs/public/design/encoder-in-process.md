@@ -15,7 +15,7 @@ once the worker is idle.
 ## Why
 
 - After the pixel cache was removed (0009), `encoder::finish` became
-  the dominant tail at 4K (`docs/performance.md` N17): 631 ms wait on
+  the dominant tail at 4K (`../contributing/performance.md` N17): 631 ms wait on
   ffmpeg subprocess teardown after the last frame was written.
   Subprocess `wait()` is unavoidable while we shell out.
 - `stdin` pipe at 4K writes ~33 MB per frame; libavcodec reads from

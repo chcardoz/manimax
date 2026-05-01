@@ -66,7 +66,7 @@ assumed globally:
   When an active `ColorTrack` segment covers `t`, the emitted
   `SceneState.objects[i].color_override` *replaces* the object's authored
   stroke/fill color entirely for that frame. `Colorize` animations author an
-  explicit `from_color`/`to_color` pair (see `docs/porting-notes/transforms.md`)
+  explicit `from_color`/`to_color` pair (see `../contributing/porting-from-manimgl.md#transforms-animations`)
   rather than relying on evaluator-side snapshotting.
 - **sRGB values enter the GPU as-is.** The framebuffer is `Rgba8UnormSrgb`;
   wgpu gamma-encodes on write so blending math happens in approximately
@@ -264,7 +264,7 @@ All 15 manimgl rate functions. Every variant carries `"kind": "<name>"`. Paramet
   `Stroke.color` / `Fill.color`. Opacity is *still* applied on top (straight
   alpha × `opacity`).
 - Pythonize round-trip: `Vec3` / `RgbaSrgb` arrive on the Python side as
-  tuples, not lists (see `docs/gotchas.md`).
+  tuples, not lists (see `../contributing/gotchas.md`).
 
 Drift risk: if new evaluator outputs get added (e.g. per-camera state), keep
 this section authoritative over the Rust struct — Python consumers read this

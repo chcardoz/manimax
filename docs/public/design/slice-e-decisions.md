@@ -153,7 +153,7 @@ with `FILL_TOLERANCE = 0.001`.
 - Tessellation cost scales with `1 / sqrt(tolerance)`. Going from
   0.25 → 0.001 is ~16× more curve segments per glyph. Hasn't
   shown up in profiling yet (text scenes are tens of glyphs, not
-  thousands), but logged in `docs/performance.md` as a future
+  thousands), but logged in `../contributing/performance.md` as a future
   per-Object knob.
 
 ### Rejected alternatives
@@ -186,11 +186,11 @@ source via a new `_rust.tex_validate` pyo3 entry point.
 
 ### Consequences
 - Argument macros (`\norm{x}`) remain unsupported. Documented in
-  `docs/tex-coverage.md` (Step 9). Escalation path is vendor-and-
+  `../contributing/porting-from-manimgl.md#tex-coverage` (Step 9). Escalation path is vendor-and-
   patch `ratex-parser`.
 - `tex_validate` re-runs parse+layout once at construction and
   again at compile. Cheap — RaTeX layout for short expressions is
-  sub-millisecond. Logged in `docs/performance.md` as a candidate
+  sub-millisecond. Logged in `../contributing/performance.md` as a candidate
   to cache via `Tex.__init__` storing the parsed DisplayList if it
   ever shows up in a profile.
 
@@ -228,7 +228,7 @@ and writes RGBA8 → PNG via the `png` crate.
   covering MP4 / PNG / WebM / GIF / APNG / image sequences /
   raw RGBA / in-memory bytes / future formats — one entry
   point, output format chosen by the sink. Flagged as future
-  work in `STATUS.md` and `docs/performance.md`. Don't grow a
+  work in `STATUS.md` and `../contributing/performance.md`. Don't grow a
   third format-specific entry point before consolidating.
 - `RuntimeError` grew `Png` and `Io` variants. Same shape as the
   existing `Encoder` variant, no surprise.

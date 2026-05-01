@@ -6,7 +6,7 @@
 
 One ADR covering the five design calls that defined Slice C. Each would normally
 be its own file; grouping them here matches the "single consolidated ADR" scope
-decision in `docs/slices/slice-c.md` §2 and avoids retroactive ADR churn flagged
+decision in `../changelog.md#slice-c` §2 and avoids retroactive ADR churn flagged
 in Slice B's retro.
 
 ---
@@ -31,7 +31,7 @@ the new `eval_at` pyfunction both take `&Bound<PyAny>`.
   `_rust.roundtrip_ir` probe still uses JSON, and `Scene.ir.to_json()` is
   preserved for inspection.
 - msgspec Structs go through `pythonize` attribute access cleanly; see the
-  `Vec3-as-tuple` gotcha in `docs/gotchas.md`.
+  `Vec3-as-tuple` gotcha in `../contributing/gotchas.md`.
 
 ### Rejected alternatives
 - **Keep JSON string.** Rejected: parse cost + weak contract across a
@@ -90,7 +90,7 @@ struct-variant parameters.
 ### Consequences
 - Composition rule per track kind is explicit in the evaluator:
   position/rotation **sum**, opacity/scale **multiply**, color takes the
-  latest-started segment. See `docs/porting-notes/rate-functions.md`.
+  latest-started segment. See `../contributing/porting-from-manimgl.md#rate-functions-easings`.
 - IR surface grew ~2× but all of it is concept-closed — Slice D need not
   revisit.
 
@@ -123,7 +123,7 @@ slice.
 - Platform-exact pixel checksums die — see decision E.
 - Non-zero winding is authored in. Self-intersecting paths render the winding
   interpretation, not the even-odd one; documented in
-  `docs/porting-notes/fill.md`.
+  `../contributing/porting-from-manimgl.md#fill-pipeline`.
 
 ### Rejected alternatives
 - **Fill first, MSAA in Slice D.** Rejected: integration scene would need

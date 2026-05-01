@@ -122,13 +122,13 @@ anchors at world `y = 0`.
 
 ## See also
 
-- `docs/decisions/0008-slice-e-decisions.md` — Tex half of Slice E.
+- `../design/slice-e-decisions.md` — Tex half of Slice E.
   §C (high-ppem outline extraction) and §D (lyon flatness pin) are
   inherited, not re-derived, here.
-- `docs/decisions/0009-remove-pixel-cache.md` — explicitly preserves
+- `../design/pixel-cache.md` — explicitly preserves
   source-keyed in-memory caches (Tex geometry, future glyph caches)
   while deleting the rgba snapshot cache. Text's cache lives in
   that carve-out.
-- `docs/porting-notes/text.md` — alignment semantics, line-height
+- `../contributing/porting-from-manimgl.md#text` — alignment semantics, line-height
   multiplier, what's missing vs. manimgl's Pango.
 - `crates/manim-rs-text/src/cosmic.rs` — the implementation.
