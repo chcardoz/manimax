@@ -18,6 +18,7 @@ jobs:
     runs-on: ubuntu-latest
     env:
       WGPU_BACKEND: vulkan
+      NO_MKDOCS_2_WARNING: "true"
     steps:
       - uses: actions/checkout@v4
         with:
