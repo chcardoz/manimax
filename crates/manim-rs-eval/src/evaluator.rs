@@ -7,19 +7,24 @@ use std::sync::{Arc, Mutex};
 
 use manim_rs_ir::{
     ColorSegment, Object, ObjectId, OpacitySegment, PositionSegment, RgbaSrgb, RotationSegment,
-    ScaleSegment, Scene, Time, TimelineOp, Track, Vec3,
+    ScaleSegment, Scene, TextAlign, TextWeight, Time, TimelineOp, Track, Vec3,
 };
 
 use crate::easing::apply_easing;
 use crate::lerp::Lerp;
 use crate::state::{ObjectState, SceneState};
 use crate::tex::compile_tex;
+use crate::text::compile_text;
 use crate::tracks::{Segment, evaluate_track, segment_alpha};
 
 /// Compiled Tex children indexed by `blake3(canonical_serde(Object::Tex))`.
 /// Each entry is the Step 3 `compile_tex` output with its `Object`s pre-Arc'd
 /// so per-frame fan-out only does ref-count bumps.
 type TexCache = Arc<Mutex<HashMap<blake3::Hash, Arc<Vec<Arc<Object>>>>>>;
+
+/// Compiled Text children indexed by `blake3((src, font, weight, size, color, align))`.
+/// Same pre-Arc'd shape as `TexCache` so fan-out is a ref-count bump.
+type TextCache = Arc<Mutex<HashMap<blake3::Hash, Arc<Vec<Arc<Object>>>>>>;
 
 /// Runtime-friendly evaluator state compiled once from an authored `Scene`.
 #[derive(Debug, Clone, Default)]
@@ -30,6 +35,10 @@ pub struct Evaluator {
     /// two scenes with the same Tex source share entries; carried across
     /// frames so a Tex that lives for N frames compiles once.
     tex_cache: TexCache,
+    /// Per-Evaluator cache of compiled Text outputs. Same shape as
+    /// `tex_cache`. Cache key intentionally excludes per-instance transforms
+    /// (Slice E §11 — same lesson as Tex's post-Step-5 cleanup).
+    text_cache: TextCache,
 }
 
 #[derive(Debug, Clone)]
@@ -87,6 +96,7 @@ impl Evaluator {
             timeline,
             tracks: index_tracks(tracks),
             tex_cache: TexCache::default(),
+            text_cache: TextCache::default(),
         }
     }
 
@@ -128,6 +138,65 @@ impl Evaluator {
         // copy into the cache. Two threads can still both run compile_tex
         // before reaching here; the loser's result is dropped. Acceptable
         // until the renderer goes parallel.
+        Arc::clone(cache.entry(key).or_insert(arc))
+    }
+
+    /// Look up (or compile and insert) the BezPath children for a Text IR
+    /// node. Cache key covers every shape-determining input — `src`, `font`,
+    /// `weight`, `size`, `color`, `align` — but **not** per-instance
+    /// transforms (position / rotation / scale tracks), which apply later at
+    /// the `ObjectState` level.
+    fn compile_text_cached(
+        &self,
+        src: &str,
+        font: Option<&str>,
+        weight: TextWeight,
+        size: f32,
+        color: RgbaSrgb,
+        align: TextAlign,
+    ) -> Arc<Vec<Arc<Object>>> {
+        let key = {
+            let mut hasher = blake3::Hasher::new();
+            hasher.update(src.as_bytes());
+            // Tag font: None vs Some so an empty Some("") stays distinct from None.
+            match font {
+                None => {
+                    hasher.update(&[0u8]);
+                }
+                Some(f) => {
+                    hasher.update(&[1u8]);
+                    hasher.update(f.as_bytes());
+                }
+            }
+            hasher.update(&[match weight {
+                TextWeight::Regular => 0,
+                TextWeight::Bold => 1,
+            }]);
+            hasher.update(&size.to_le_bytes());
+            for c in color {
+                hasher.update(&c.to_le_bytes());
+            }
+            hasher.update(&[match align {
+                TextAlign::Left => 0,
+                TextAlign::Center => 1,
+                TextAlign::Right => 2,
+            }]);
+            hasher.finalize()
+        };
+
+        if let Some(hit) = self.text_cache.lock().unwrap().get(&key).cloned() {
+            return hit;
+        }
+
+        let compiled: Vec<Arc<Object>> = compile_text(src, font, weight, size, color, align)
+            .into_iter()
+            .map(Arc::new)
+            .collect();
+        let arc = Arc::new(compiled);
+
+        let mut cache = self.text_cache.lock().unwrap();
+        // Re-check under the lock so a parallel miss doesn't leak a second
+        // copy. Same loser-drops-its-result acceptance as `compile_tex_cached`.
         Arc::clone(cache.entry(key).or_insert(arc))
     }
 
@@ -176,6 +245,24 @@ impl Evaluator {
                 let combined_scale = scale * *tex_scale;
                 for child in children.iter() {
                     objects.push(make_state(Arc::clone(child), combined_scale));
+                }
+            } else if let Object::Text {
+                src,
+                font,
+                weight,
+                size,
+                color,
+                align,
+            } = &**object
+            {
+                // Text has no IR `scale` field — `size` is baked into the
+                // shaped geometry (cosmic-text adapter post-multiplies by
+                // `size / SHAPE_PPEM`). Track-resolved scale passes through
+                // unchanged.
+                let children =
+                    self.compile_text_cached(src, font.as_deref(), *weight, *size, *color, *align);
+                for child in children.iter() {
+                    objects.push(make_state(Arc::clone(child), scale));
                 }
             } else {
                 objects.push(make_state(Arc::clone(object), scale));

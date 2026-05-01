@@ -14,7 +14,7 @@ from typing import Literal
 
 import msgspec
 
-SCHEMA_VERSION: int = 2
+SCHEMA_VERSION: int = 3
 
 # ============================================================================
 # === Scalars ===
@@ -192,7 +192,42 @@ class Tex(
     scale: float
 
 
-Object = Polyline | BezPath | Tex
+# Shaped-text knobs. Lowercase string literals match Rust's
+# `#[serde(rename_all = "lowercase")]` on `TextWeight` / `TextAlign`,
+# and follow the same `Literal[...]` precedent as `JointKind`.
+TextWeight = Literal["regular", "bold"]
+TextAlign = Literal["left", "center", "right"]
+
+
+class Text(
+    msgspec.Struct,
+    tag_field="kind",
+    tag="Text",
+    forbid_unknown_fields=True,
+    frozen=True,
+):
+    """Plain-text source. Shaped to per-glyph BezPaths in Rust eval.
+
+    Mirrors `Tex` in shape: source is content-only (no per-instance
+    transform here — `scale`/position/rotation come from animation tracks
+    on the parent `ObjectState`). The cache key is the content tuple
+    `(src, font, weight, size, color, align)`.
+
+    `font = None` resolves to bundled Inter Regular. Non-`None` values
+    are reserved for user-registered families (S7c/S7f) and not wired
+    up yet on the Rust side.
+    """
+
+    src: str
+    font: str | None
+    weight: TextWeight
+    # Em size in world units. `1.0` ⇒ one em equals one world unit.
+    size: float
+    color: RgbaSrgb
+    align: TextAlign
+
+
+Object = Polyline | BezPath | Tex | Text
 
 
 # ============================================================================

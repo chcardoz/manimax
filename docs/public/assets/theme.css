@@ -1,0 +1,40 @@
+/* Darker, neutral-grey palette overrides for both schemes. */
+
+[data-md-color-scheme="slate"] {
+  --md-default-bg-color:        hsl(0, 0%, 7%);
+  --md-default-bg-color--light:  hsl(0, 0%, 10%);
+  --md-default-bg-color--lighter: hsl(0, 0%, 14%);
+  --md-default-bg-color--lightest: hsl(0, 0%, 18%);
+
+  --md-default-fg-color:        hsl(0, 0%, 92%);
+  --md-default-fg-color--light:  hsl(0, 0%, 78%);
+  --md-default-fg-color--lighter: hsl(0, 0%, 55%);
+  --md-default-fg-color--lightest: hsl(0, 0%, 30%);
+
+  --md-primary-fg-color:        hsl(0, 0%, 4%);
+  --md-primary-bg-color:        hsl(0, 0%, 92%);
+
+  --md-accent-fg-color:         hsl(0, 0%, 80%);
+  --md-accent-fg-color--transparent: hsla(0, 0%, 80%, 0.1);
+
+  --md-code-bg-color:           hsl(0, 0%, 11%);
+  --md-code-fg-color:           hsl(0, 0%, 88%);
+
+  --md-typeset-a-color:         hsl(0, 0%, 80%);
+
+  --md-footer-bg-color:         hsl(0, 0%, 4%);
+  --md-footer-bg-color--dark:   hsl(0, 0%, 2%);
+}
+
+[data-md-color-scheme="default"] {
+  --md-primary-fg-color:        hsl(0, 0%, 12%);
+  --md-primary-bg-color:        hsl(0, 0%, 98%);
+
+  --md-accent-fg-color:         hsl(0, 0%, 25%);
+  --md-accent-fg-color--transparent: hsla(0, 0%, 25%, 0.1);
+
+  --md-typeset-a-color:         hsl(0, 0%, 25%);
+
+  --md-footer-bg-color:         hsl(0, 0%, 12%);
+  --md-footer-bg-color--dark:   hsl(0, 0%, 6%);
+}

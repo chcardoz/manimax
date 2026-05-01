@@ -62,6 +62,12 @@ pub(crate) fn tessellate_object(state: &ObjectState) -> ObjectDraw {
         Object::Tex { .. } => {
             unreachable!("Object::Tex must be expanded by Evaluator::eval_at before tessellation")
         }
+        // Slice E Step 7 mirror of the Tex contract: the evaluator fans
+        // `Object::Text` into glyph `Object::BezPath`s during eval. The
+        // raster pipeline must never see a raw `Text` node.
+        Object::Text { .. } => {
+            unreachable!("Object::Text must be expanded by Evaluator::eval_at before tessellation")
+        }
     };
 
     let fill = fill_raw.and_then(|(mesh, color)| {

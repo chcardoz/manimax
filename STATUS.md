@@ -1,57 +1,22 @@
 # Status
 
-**Last updated:** 2026-04-29
-**Current slice:** Slice E — Steps 1–5 shipped, Steps 6–9 remaining.
-This branch (`chcardoz/hello`) carries the perf + hardware-encoder
-work: pixel-cache removal (ADR 0009), in-process encoder (ADR 0010),
-and hardware h264 backend with VT→NVENC fallback (ADR 0011). Ready
-for PR; resume Slice E Step 6 after merge.
+**Last updated:** 2026-05-01
+**Current slice:** none (CI fix after Slice E/docs work)
 
-## Last session did
+CI failure `test` / GitHub Job `73898676458` was four failures in `tests/python/test_e2e_text_tex.py`: helpers imported `examples.text_scene` / `examples.tex_scene` as top-level modules, but the CI editable/maturin environment did not put the repo root on `sys.path`.
 
-Added `EncoderBackend::Hardware` to `EncoderOptions`, exposed as
-`--encoder hardware` on the CLI. The backend walks `HARDWARE_CANDIDATES`
-(`h264_videotoolbox` → `h264_nvenc`) at session start and picks the
-first codec present in libavcodec. NV12 pixel format for both. Same
-binary works on macOS dev (VT) and Linux+Nvidia deploy (NVENC) without
-a code change.
+This session changed those helpers to load the checked-in example files by path via `manim_rs.discovery.load_scene`, preserving coverage of the real examples without depending on ambient import path. Added the CI import-path trap to `docs/public/contributing/gotchas.md`.
 
-Also rewrote the Python integration test scene to cover every
-author-facing surface shipped through Slice E:
+Slice E (text + math) remains shipped end-to-end. Both §1 acceptance scenes render with bundled fonts, no system LaTeX or system font required. Per-`Evaluator` source-keyed caches for Tex and Text geometry; `compile_tex` / `compile_text` measurably hit on duplicate sources; byte-determinism across re-renders.
 
-- All 3 mobjects (`Polyline`, `BezPath`, `Tex`)
-- All 5 BezPath verbs (the green teardrop alone uses every one)
-- All 6 transforms (`Translate`/`Rotate`/`ScaleBy`/`FadeIn`/`FadeOut`/`Colorize`)
-- 8 representative easings + the 4 Scene API methods
-  (`add`/`play`/`wait`/`remove`)
+## Explicitly deferred
 
-Three-phase 3 s timeline (arrival → flourish → depart-and-remove);
-frames 15/45 strict centroid checks, frame 84 existence-only check
-catches `FadeOut`/`RemoveOp` regressions.
-
-Verification:
-
-- `cargo test --workspace`: green (5 encoder tests now, was 4 — new
-  `hardware_encoder_writes_valid_mp4` smoke gates on
-  `BackendUnavailable` and skips silently if no hw encoder is linked).
-- `pytest tests/python`: 111 passed (added integration test).
-- `--encoder hardware` perf on M-series macOS (VT vs libx264):
-  - 4K30 2 s: 10.6 s → **3.4 s** (~3×, CPU 134 % → 82 %)
-  - 1080p60 2 s: 2.42 s → 2.14 s (~12 %)
+- **Tex snapshot harness** (Slice E Step 6 follow-up): corpus data + coverage doc shipped, but the parametrized snapshot test, baseline PNGs, `--update-snapshots` flag, and pinned `TEX_SNAPSHOT_TOLERANCE` did not. Cross-platform tolerance pinning needs Linux/lavapipe CI runs. Tracked in `docs/public/contributing/porting-from-manimgl.md` "Tex coverage > Snapshot tolerance".
+- **Baseline-PNG version of the Text render test.** Same blocker. Today's centroid-based check is the placeholder.
 
 ## Next action
 
-After PR lands, resume **Slice E Step 6**: Tex coverage corpus +
-tolerance snapshot pinning.
-
-Perf followups (now reframed):
-
-- N17 (encoder finish tail): closed by 0010 at 1080p; closed by 0011
-  at 4K via VT.
-- O1 (cache `Runtime`): next big lever for short renders / interactive
-  use — unblocks PyRuntime (E3a).
-- Deploy-time NVENC validation on Modal/fly.io GPU containers (T4/A10/A100):
-  out of scope here; pre-wired so the deploy commit is pure infra.
+If CI is green, pick the next slice. Leading candidates: Tex snapshot harness mini-slice, Slice E.5 SVG import, or Slice F 3D pipeline.
 
 ## Blockers
 

@@ -10,3 +10,4 @@ repository.workspace = true
 swash = { workspace = true }
 kurbo = { workspace = true }
 ratex-katex-fonts = { workspace = true }
+cosmic-text = { workspace = true }

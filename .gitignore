@@ -34,3 +34,6 @@ venv/
 # Render snapshot cache. Created at CWD when MANIM_RS_CACHE_DIR is unset;
 # unbounded growth by design.
 **/.manim-rs-cache/
+
+# MkDocs build output.
+/site/
