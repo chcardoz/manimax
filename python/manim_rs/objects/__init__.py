@@ -10,11 +10,13 @@ from manim_rs.objects.geometry import (
     quad_to,
 )
 from manim_rs.objects.tex import Tex
+from manim_rs.objects.text import Text
 
 __all__ = [
     "BezPath",
     "Polyline",
     "Tex",
+    "Text",
     "close",
     "cubic_to",
     "line_to",

@@ -3,23 +3,102 @@
 **Last updated:** 2026-04-30
 **Current slice:** Slice E.
 **Step 6:** corpus + coverage doc landed; **harness deferred**.
-**Step 7:** S7a (font plumbing reused) + S7b (cosmic-text adapter +
-`Object::Text` IR variant) landed; S7c–S7e remaining.
+**Step 7 complete (S7a–S7e).** S7a font plumbing, S7b cosmic-text
+adapter + IR variant, S7c eval fan-out + cache, S7d Python
+constructor, **S7e end-to-end render** all landed. Baseline-PNG
+snapshot deferred — see "Last session did" for the rationale and
+the marker left in `test_text.py`.
 
 Branch (`chcardoz/vancouver-v1`) carries everything since `main`'s
-`99e1492` (perf + hardware-encoder) — three new commits today, none
-PR'd yet:
+`99e1492` (perf + hardware-encoder) — four new commits, none PR'd yet:
 
 - `eeeddbf` Step 6 corpus + tex-coverage doc.
 - `93f04ab` Step 7 S7a/S7b: `Object::Text` IR variant + cosmic-text
   adapter.
-- (this commit) STATUS + slice-e plan refresh.
+- (prior commit) STATUS + slice-e plan refresh.
+- (prior commit) Step 7 S7c: eval-time Text fan-out + cache.
+- (prior commit) Step 7 S7d: Python `Text(...)` constructor.
+- (this commit) Step 7 S7e: end-to-end Text render test.
 
 `docs/slices/slice-e.md` Steps 6–9 were already rewritten to absorb
 ADR 0009 (pixel cache removed) + ADR 0010/0011 (encoder push) and
 renumber the planned Text ADR to `0012-text-via-cosmic-text-swash.md`.
 
 ## Last session did
+
+**Step 7 S7e (end-to-end Text render).**
+- `tests/python/test_text.py::test_text_renders_visible_pixels_at_origin`:
+  builds a 480×270 Scene, adds `Text("HI", size=0.6)`, renders to
+  mp4, decodes frame 0 with ffmpeg, masks bright pixels with numpy,
+  asserts (a) >50 lit pixels (rules out blank frame / single-glyph
+  clip), (b) <5000 lit pixels (rules out runaway shape), (c)
+  centroid right of canvas center (proves left-aligned text extends
+  rightward from origin), (d) centroid above baseline pixel y=135
+  (proves ascenders sit above world y=0 with no descenders in "HI").
+- Mirrors the pattern from `test_render_to_mp4_frame0_has_content_at_origin`.
+- **Baseline-PNG snapshot deferred** — Step 6's harness is still
+  TBD, so a tolerance-snapshot against a checked-in PNG isn't yet
+  possible. Module docstring in `test_text.py` flags this as a
+  follow-up; when Step 6 lands the PNG-baseline test should sit
+  alongside (or replace) the centroid check.
+- **Bug surfaced and fixed** during this work: I forgot to run
+  `maturin develop` after S7c's Rust changes — the first run of
+  this test panicked with `unreachable: Object::Text must be
+  expanded by Evaluator::eval_at` because the loaded `_rust`
+  extension was the pre-S7c build. Worth flagging for `gotchas.md`
+  if a future agent hits it (cargo test alone doesn't rebuild the
+  extension).
+
+Verification: `pytest tests/python` green (130 tests, 1 new in
+`test_text.py`); `cargo test --workspace` still green.
+
+**Step 7 S7d (Python `Text(...)` constructor).**
+- `python/manim_rs/objects/text.py`: `Text` class mirroring `Tex`'s
+  shape — keyword-only args (`font`, `weight`, `size`, `color`,
+  `align`), `to_ir()` returns `ir.Text`. Validation: empty `src`,
+  unknown `weight`/`align`, non-positive or non-finite `size` all
+  raise `ValueError`. No `_rust.text_validate` parallel — cosmic-text
+  accepts any UTF-8, so there's nothing to validate beyond argument
+  shape (Tex's validator catches LaTeX parse errors; Text has no
+  equivalent failure mode at construction time).
+- Re-exports updated: `python/manim_rs/objects/__init__.py` and
+  `python/manim_rs/__init__.py` now expose `Text` at the top level.
+- `tests/python/test_text.py`: 17 tests — defaults, custom values,
+  parametrized over each weight + each align, every validation error
+  path, color/size coercion, `_id` starts unbound.
+- pyo3 surface intentionally untouched. The pre-existing `ir.Text`
+  msgspec struct (S7b) handles wire-format; the constructor is a thin
+  Python class.
+
+Verification: `pytest tests/python` green (129 tests, 17 new in
+`test_text.py`); `cargo test --workspace` still green.
+
+**Step 7 S7c (Text eval fan-out + cache).**
+- `crates/manim-rs-eval/src/text.rs`: `compile_text(src, font, weight,
+  size, color, align)` wraps `text_to_bezpaths`, recolors all glyph
+  paths to the IR's `color` (cosmic-text emits white), and emits
+  fill-only `Object::BezPath`s. Mirror of `tex.rs` shape; no
+  `\textcolor`-style per-item override yet.
+- `crates/manim-rs-eval/src/evaluator.rs`: per-`Evaluator`
+  `text_cache: Arc<Mutex<HashMap<blake3::Hash, Arc<Vec<Arc<Object>>>>>>`
+  (mirrors `tex_cache` — `RwLock`/`Box::leak` from Slice E §11 was
+  aspirational, never shipped for Tex; we kept Tex/Text symmetric on
+  the actually-deployed Mutex+Arc pattern). Cache key is
+  `(src, font, weight, size, color, align)` only — per-instance
+  transforms intentionally absent (same lesson as Tex's post-Step-5
+  cleanup). `Object::Text` arm in `Evaluator::eval_at` fans out to
+  one `ObjectState` per glyph; track-resolved `scale` passes through
+  unchanged (`size` is baked into shaped geometry, no IR `scale`
+  field on Text).
+- ADR 0009 connection: this is the "future glyph cache" the ADR
+  explicitly carved out (§Consequences last bullet) — keyed on shape
+  source, in-memory, no I/O. Different failure profile from the
+  deleted pixel cache.
+
+Verification: `cargo test --workspace` green (8 new tests in eval —
+3 in `text::tests`, 5 in `evaluator` integration tests). Tests cover
+fan-out, color landing, scale-track passthrough, cache-hit pointer
+equality, and color-distinguishing cache keys.
 
 **Step 6 (data + doc only).**
 - `tests/python/tex_corpus.py`: 33 entries, picked by distinct
@@ -65,26 +144,26 @@ tests/python` green (1 new test in `test_ir_roundtrip`).
 
 ## Next action
 
-Resume **Slice E Step 7 S7c–S7e**:
+Two parallel tracks open. Pick one before resuming:
 
-- **S7c — eval-time fan-out.** `crates/manim-rs-eval`: when
-  `Evaluator::eval_at` encounters an `Object::Text`, call
-  `text_to_bezpaths`, recolor to the IR's `color`, and emit one
-  per-glyph `ObjectState` (mirrors how Tex fans out today). Add a
-  per-`Evaluator` `(src, font, weight, size, color, align) →
-  Vec<Object>` cache; `Box::leak`-under-write-lock pattern (per
-  Slice E §11 cleanup-pass note); minimal cache key (no per-instance
-  transforms in the key — same lesson as Tex's post-Step-5 cleanup).
-- **S7d — pyo3 surface + Python `Text(...)` constructor.**
-  `python/manim_rs/objects/text.py` mirroring `objects/tex.py`'s
-  shape. GIL discipline: copy `&str` to `String` while holding the
-  GIL, then `py.allow_threads` for shape+layout+outline (`tex_validate`
-  cleanup-pass pattern).
-- **S7e — end-to-end Text snapshot.** `tests/python/test_text.py`:
-  `Text("Hello")` round-trips, renders to mp4, single-frame
-  tolerance-snapshot against a checked-in baseline PNG using the
-  same `TEX_SNAPSHOT_TOLERANCE` from Step 6 (still TBD; coordinate
-  with the Step 6 harness).
+**Track A — finish Step 6 harness.** This unblocks the
+baseline-PNG version of S7e and pins
+`TEX_SNAPSHOT_TOLERANCE`. Build `tests/python/test_tex_corpus.py`
+parametrized over `CORPUS`, `--update-snapshots` flag, baselines
+checked into `tests/python/snapshots/tex/`, pin a tolerance that
+passes on macOS-arm64 dev *and* Linux/lavapipe CI. Document the
+value at the bottom of `tex-coverage.md`. Then upgrade the S7e
+centroid check to a baseline-PNG comparison.
+
+**Track B — Step 8 (E2E + determinism + cache probe).** End-to-end
+scene with both Tex and Text active, determinism check across two
+runs, observable evidence the eval-level Tex/Text caches are hit
+(repeated frames don't recompile). No new functionality, just
+proving Step 7's invariants under load.
+
+**Step 9 (ADR 0012 + porting notes + perf log)** sits after both.
+ADR 0012 — `text-via-cosmic-text-swash` — captures the cosmic-text
++ swash + Inter Regular bundling decisions.
 
 Then **Step 6 harness completion**: `tests/python/test_tex_corpus.py`
 parametrized over `CORPUS`, `--update-snapshots` flag, baselines
