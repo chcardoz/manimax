@@ -936,6 +936,212 @@ mod tests {
         );
     }
 
+    // ----------------------------------------------------------------
+    // Slice E Step 8: cache-hit probe.
+    //
+    // Slice plan §5: "In-process compile_tex and font caches measurably
+    // hit on a Tex scene with duplicate sources (verified via test-only
+    // probe, not timing)." Probe via Arc::ptr_eq on fan-out children —
+    // a cache hit returns the same `Arc<Object>` instance, observable
+    // without exposing counters through pyo3.
+    // ----------------------------------------------------------------
+
+    #[test]
+    fn tex_cache_returns_same_arc_on_repeat() {
+        // Two `eval_at` calls on the same Evaluator must return pointer-
+        // equal child Arcs for an identical Tex node.
+        use manim_rs_ir::Object;
+        use std::collections::BTreeMap;
+
+        let tex = Object::Tex {
+            src: r"x^2 + y^2 = r^2".to_string(),
+            macros: BTreeMap::new(),
+            color: [1.0, 1.0, 1.0, 1.0],
+            scale: 1.0,
+        };
+        let scene = make_scene(
+            vec![TimelineOp::Add {
+                t: 0.0,
+                id: 1,
+                object: tex,
+            }],
+            vec![],
+            1.0,
+        );
+
+        let evaluator = Evaluator::from_scene(&scene);
+        let first = evaluator.eval_at(0.0);
+        let second = evaluator.eval_at(0.0);
+
+        assert_eq!(first.objects.len(), second.objects.len());
+        for (a, b) in first.objects.iter().zip(second.objects.iter()) {
+            assert!(
+                Arc::ptr_eq(&a.object, &b.object),
+                "compile_tex cache hit should return pointer-equal Arc<Object>"
+            );
+        }
+    }
+
+    #[test]
+    fn duplicate_tex_sources_share_compiled_geometry() {
+        // Scene with three Tex nodes; two share the same source. After
+        // eval, the duplicate ids must hand back pointer-equal child
+        // Arcs (cache hit), while the unique source must produce
+        // distinct ones (cache miss → fresh compile).
+        //
+        // Slice plan: "compile_tex cache hit count == (Tex node count
+        // − unique source count) for a scene with intentional duplicates."
+        // Tex nodes = 3, unique sources = 2 ⇒ expected hits = 1.
+        use manim_rs_ir::Object;
+        use std::collections::BTreeMap;
+
+        let dup_src = r"x^2".to_string();
+        let unique_src = r"y^3".to_string();
+        let make_tex = |src: String| Object::Tex {
+            src,
+            macros: BTreeMap::new(),
+            color: [1.0, 1.0, 1.0, 1.0],
+            scale: 1.0,
+        };
+        let scene = make_scene(
+            vec![
+                TimelineOp::Add {
+                    t: 0.0,
+                    id: 1,
+                    object: make_tex(dup_src.clone()),
+                },
+                TimelineOp::Add {
+                    t: 0.0,
+                    id: 2,
+                    object: make_tex(dup_src.clone()),
+                },
+                TimelineOp::Add {
+                    t: 0.0,
+                    id: 3,
+                    object: make_tex(unique_src),
+                },
+            ],
+            vec![],
+            1.0,
+        );
+
+        let evaluator = Evaluator::from_scene(&scene);
+        let state = evaluator.eval_at(0.0);
+
+        let id1: Vec<&Arc<Object>> = state
+            .objects
+            .iter()
+            .filter(|s| s.id == 1)
+            .map(|s| &s.object)
+            .collect();
+        let id2: Vec<&Arc<Object>> = state
+            .objects
+            .iter()
+            .filter(|s| s.id == 2)
+            .map(|s| &s.object)
+            .collect();
+        let id3: Vec<&Arc<Object>> = state
+            .objects
+            .iter()
+            .filter(|s| s.id == 3)
+            .map(|s| &s.object)
+            .collect();
+
+        assert_eq!(
+            id1.len(),
+            id2.len(),
+            "duplicate sources fan out identically"
+        );
+        assert!(!id1.is_empty(), "Tex must produce at least one child");
+        for (a, b) in id1.iter().zip(id2.iter()) {
+            assert!(
+                Arc::ptr_eq(a, b),
+                "duplicate Tex sources must share compiled geometry"
+            );
+        }
+        // Unique source must NOT share Arcs with the duplicate cohort.
+        // (Different source ⇒ different cache key ⇒ different Vec<Arc<Object>>.)
+        if !id3.is_empty() && !id1.is_empty() {
+            assert!(
+                !Arc::ptr_eq(id1[0], id3[0]),
+                "distinct Tex sources must not collide in the cache"
+            );
+        }
+    }
+
+    #[test]
+    fn duplicate_text_sources_share_compiled_geometry() {
+        // Mirror of `duplicate_tex_sources_share_compiled_geometry` for
+        // the Text cache — same invariant, same observation.
+        use manim_rs_ir::{Object, TextAlign, TextWeight};
+
+        let make_text = |src: &str| Object::Text {
+            src: src.to_string(),
+            font: None,
+            weight: TextWeight::Regular,
+            size: 1.0,
+            color: [1.0, 1.0, 1.0, 1.0],
+            align: TextAlign::Left,
+        };
+        let scene = make_scene(
+            vec![
+                TimelineOp::Add {
+                    t: 0.0,
+                    id: 1,
+                    object: make_text("Hello"),
+                },
+                TimelineOp::Add {
+                    t: 0.0,
+                    id: 2,
+                    object: make_text("Hello"),
+                },
+                TimelineOp::Add {
+                    t: 0.0,
+                    id: 3,
+                    object: make_text("World"),
+                },
+            ],
+            vec![],
+            1.0,
+        );
+
+        let evaluator = Evaluator::from_scene(&scene);
+        let state = evaluator.eval_at(0.0);
+        let id1: Vec<&Arc<Object>> = state
+            .objects
+            .iter()
+            .filter(|s| s.id == 1)
+            .map(|s| &s.object)
+            .collect();
+        let id2: Vec<&Arc<Object>> = state
+            .objects
+            .iter()
+            .filter(|s| s.id == 2)
+            .map(|s| &s.object)
+            .collect();
+        let id3: Vec<&Arc<Object>> = state
+            .objects
+            .iter()
+            .filter(|s| s.id == 3)
+            .map(|s| &s.object)
+            .collect();
+
+        assert_eq!(id1.len(), id2.len());
+        assert!(!id1.is_empty());
+        for (a, b) in id1.iter().zip(id2.iter()) {
+            assert!(
+                Arc::ptr_eq(a, b),
+                "duplicate Text sources must share compiled geometry"
+            );
+        }
+        if !id3.is_empty() && !id1.is_empty() {
+            assert!(
+                !Arc::ptr_eq(id1[0], id3[0]),
+                "distinct Text sources must not collide in the cache"
+            );
+        }
+    }
+
     #[test]
     fn multiple_add_remove_cycles_track_liveness() {
         // Four alternating ops on the same id — `active_ids_at` must update
