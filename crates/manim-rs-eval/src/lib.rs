@@ -41,11 +41,13 @@ mod evaluator;
 mod lerp;
 mod state;
 mod tex;
+mod text;
 mod tracks;
 
 pub use evaluator::{Evaluator, eval_at};
 pub use state::{ObjectState, SceneState};
 pub use tex::compile_tex;
+pub use text::compile_text;
 
 #[cfg(test)]
 mod tests {
@@ -55,6 +57,7 @@ mod tests {
         RotationSegment, SCHEMA_VERSION, ScaleSegment, Scene, SceneMetadata, Stroke, Time,
         TimelineOp, Track, Vec3,
     };
+    use std::sync::Arc;
 
     fn square_points() -> Vec<Vec3> {
         vec![
@@ -711,6 +714,226 @@ mod tests {
                 s.scale
             );
         }
+    }
+
+    // ----------------------------------------------------------------
+    // Slice E Step 7 S7c: Text fan-out at eval time.
+    // ----------------------------------------------------------------
+
+    #[test]
+    fn text_eval_at_fans_out_into_bezpath_states() {
+        use manim_rs_ir::{Object, TextAlign, TextWeight};
+
+        let scene = make_scene(
+            vec![TimelineOp::Add {
+                t: 0.0,
+                id: 1,
+                object: Object::Text {
+                    src: "Hello".to_string(),
+                    font: None,
+                    weight: TextWeight::Regular,
+                    size: 1.0,
+                    color: [1.0, 1.0, 1.0, 1.0],
+                    align: TextAlign::Left,
+                },
+            }],
+            vec![],
+            1.0,
+        );
+
+        let state = eval_at(&scene, 0.0);
+        assert!(
+            state.objects.len() >= 5,
+            "Text must fan out into one BezPath per glyph (got {})",
+            state.objects.len()
+        );
+        for s in &state.objects {
+            assert_eq!(s.id, 1, "fan-out children share the parent ObjectId");
+            match &*s.object {
+                Object::BezPath {
+                    verbs,
+                    stroke,
+                    fill,
+                } => {
+                    assert!(!verbs.is_empty());
+                    assert!(stroke.is_none());
+                    assert!(fill.is_some());
+                }
+                Object::Text { .. } => panic!("Text must not survive eval"),
+                _ => panic!("fan-out must emit only Object::BezPath"),
+            }
+        }
+    }
+
+    #[test]
+    fn text_color_lands_on_every_glyph() {
+        use manim_rs_ir::{Fill, Object, TextAlign, TextWeight};
+
+        let red: RgbaSrgb = [1.0, 0.0, 0.0, 1.0];
+        let scene = make_scene(
+            vec![TimelineOp::Add {
+                t: 0.0,
+                id: 1,
+                object: Object::Text {
+                    src: "ab".to_string(),
+                    font: None,
+                    weight: TextWeight::Regular,
+                    size: 1.0,
+                    color: red,
+                    align: TextAlign::Left,
+                },
+            }],
+            vec![],
+            1.0,
+        );
+        let state = eval_at(&scene, 0.0);
+        assert!(!state.objects.is_empty());
+        for s in &state.objects {
+            if let Object::BezPath {
+                fill: Some(Fill { color }),
+                ..
+            } = &*s.object
+            {
+                assert_eq!(*color, red, "every glyph must wear the IR color");
+            }
+        }
+    }
+
+    #[test]
+    fn text_scale_track_passes_through_unchanged() {
+        // Text has no IR `scale` field — `size` is baked into geometry.
+        // A Scale track of 2.0 should surface as ObjectState.scale=2.0
+        // on every fan-out child, not multiplied with anything text-side.
+        use manim_rs_ir::{Object, TextAlign, TextWeight};
+
+        let scene = make_scene(
+            vec![TimelineOp::Add {
+                t: 0.0,
+                id: 1,
+                object: Object::Text {
+                    src: "x".to_string(),
+                    font: None,
+                    weight: TextWeight::Regular,
+                    size: 1.0,
+                    color: [1.0; 4],
+                    align: TextAlign::Left,
+                },
+            }],
+            vec![Track::Scale {
+                id: 1,
+                segments: vec![ScaleSegment {
+                    t0: 0.0,
+                    t1: 1.0,
+                    from: 2.0,
+                    to: 2.0,
+                    easing: Easing::Linear {},
+                }],
+            }],
+            1.0,
+        );
+
+        let state = eval_at(&scene, 0.5);
+        assert!(!state.objects.is_empty());
+        for s in &state.objects {
+            assert!(
+                (s.scale - 2.0).abs() < 1e-6,
+                "expected ObjectState.scale=2.0, got {}",
+                s.scale
+            );
+        }
+    }
+
+    #[test]
+    fn text_cache_returns_same_arc_on_repeat() {
+        // Two eval calls with the same Text node must return the exact same
+        // child Arcs (pointer-equal), proving the cache hit. The fan-out
+        // children are identity-shared between calls.
+        use manim_rs_ir::{Object, TextAlign, TextWeight};
+
+        let object = Object::Text {
+            src: "Cache".to_string(),
+            font: None,
+            weight: TextWeight::Regular,
+            size: 1.0,
+            color: [1.0; 4],
+            align: TextAlign::Left,
+        };
+        let scene = make_scene(
+            vec![TimelineOp::Add {
+                t: 0.0,
+                id: 1,
+                object,
+            }],
+            vec![],
+            1.0,
+        );
+
+        // Use a single Evaluator (not the free `eval_at`) so the cache
+        // persists between calls — the free function makes a fresh
+        // evaluator per call and would always miss.
+        let evaluator = Evaluator::from_scene(&scene);
+        let first = evaluator.eval_at(0.0);
+        let second = evaluator.eval_at(0.0);
+
+        assert_eq!(first.objects.len(), second.objects.len());
+        for (a, b) in first.objects.iter().zip(second.objects.iter()) {
+            assert!(
+                Arc::ptr_eq(&a.object, &b.object),
+                "cache hit should return pointer-equal Arc<Object>"
+            );
+        }
+    }
+
+    #[test]
+    fn text_cache_keys_distinguish_color() {
+        // Same src + size + weight + align but different colors must NOT
+        // share cache entries — color is baked into the fill of each child.
+        use manim_rs_ir::{Fill, Object, TextAlign, TextWeight};
+
+        let scene = make_scene(
+            vec![
+                TimelineOp::Add {
+                    t: 0.0,
+                    id: 1,
+                    object: Object::Text {
+                        src: "ab".to_string(),
+                        font: None,
+                        weight: TextWeight::Regular,
+                        size: 1.0,
+                        color: [1.0, 0.0, 0.0, 1.0],
+                        align: TextAlign::Left,
+                    },
+                },
+                TimelineOp::Add {
+                    t: 0.0,
+                    id: 2,
+                    object: Object::Text {
+                        src: "ab".to_string(),
+                        font: None,
+                        weight: TextWeight::Regular,
+                        size: 1.0,
+                        color: [0.0, 0.0, 1.0, 1.0],
+                        align: TextAlign::Left,
+                    },
+                },
+            ],
+            vec![],
+            1.0,
+        );
+
+        let state = eval_at(&scene, 0.0);
+        let red_seen = state.objects.iter().any(|s| {
+            matches!(&*s.object, Object::BezPath { fill: Some(Fill { color }), .. }
+                if *color == [1.0, 0.0, 0.0, 1.0])
+        });
+        let blue_seen = state.objects.iter().any(|s| {
+            matches!(&*s.object, Object::BezPath { fill: Some(Fill { color }), .. }
+                if *color == [0.0, 0.0, 1.0, 1.0])
+        });
+        assert!(
+            red_seen && blue_seen,
+            "both colors must surface — separate cache entries"
+        );
     }
 
     #[test]
