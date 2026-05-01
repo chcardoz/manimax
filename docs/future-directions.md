@@ -186,14 +186,6 @@ a third format-specific function first — that's how things calcify.
 
 ---
 
-## F7. PyO3 boundary error chain ✅ closed (2026-04-28)
-
-Shipped as `manim-rs-py::runtime_err_to_pyerr` — walks
-`std::error::Error::source` and builds a `PyRuntimeError` chain via
-`PyErr::set_cause`. Free function rather than `From<RuntimeError> for
-PyErr` because orphan rules forbid the latter (both types live outside
-`manim-rs-py`). See `docs/performance.md` E3c for the shipped form.
-
 ---
 
 Update cadence: when a trigger fires and gets actioned, the entry

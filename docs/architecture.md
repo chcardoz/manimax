@@ -1,7 +1,9 @@
 # Manimax — Architecture, Stack, and Design Context
 
-**Date of last update:** 2026-04-20
+**Date of last update:** 2026-04-30
 **Context:** This document is the full dump of every decision, rejected option, and piece of research that led to the current architecture. It exists because the previous conversation was long and the next agent needs to pick up cold. Read this completely before proposing any change.
+
+**Currency note:** Section 9 "What Gets Built First" is historical — Slices B/C/D/E have all shipped. For current decisions read `docs/decisions/` (especially 0008–0012); for what's in flight read `STATUS.md`. The stack pins in §5 / §6 are still authoritative — flag if any have rotted.
 
 ---
 
@@ -578,4 +580,4 @@ This was fact-checked in April 2026 via web research. Flag any of these if they 
 - **wgpu** over tiny-skia/Vello because it's the only Rust stack supporting 2D + 3D in one codebase without alpha deps.
 - **Stack is verified current** as of April 2026. Rust 1.95 / edition 2024 / wgpu 29 / pyo3 0.23 (pinned; 0.28 is upstream current) / maturin 1.13.1 / Python 3.11+.
 - **Separate repo from Divita.** Manimax is a standalone library.
-- **Slice B shipped** — Python records polyline → Rust evaluates IR → wgpu rasters → ffmpeg encodes mp4. See `docs/slices/slice-b.md` and `STATUS.md` for current state.
+- **Slices B → E shipped.** Python authoring → IR → Rust eval → wgpu raster → in-process libavcodec → mp4. Real strokes, fills, snapshot caches, text (cosmic-text + swash), and math (RaTeX). See `docs/slices/`, `docs/decisions/`, and `STATUS.md`.

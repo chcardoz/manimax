@@ -25,7 +25,7 @@ Fix: write assertions as tuples (`== (0.0, 0.0, 0.0)`) or normalize with `list(.
 
 `cd /foo && cargo test ; source .venv/bin/activate` can fail because the activation step resolves `.venv` relative to whatever cwd the shell lands in after the previous command, not the repo root. Agents using `Bash` with `;`-separated chains have hit this.
 
-Fix: **use the absolute path** — `source /Users/chcardoz/conductor/workspaces/manimax/islamabad/.venv/bin/activate` — or keep activation as its own first command and chain the rest with `&&`.
+Fix: **use the absolute path** to the worktree's `.venv/bin/activate`, or keep activation as its own first command and chain the rest with `&&`.
 
 ### Depythonize before `py.allow_threads`, not after
 
@@ -163,25 +163,11 @@ Pixel-check tests that assert "bright pixels exist somewhere in frame 0" need a 
 
 If you need to test that the *renderer* output survives, split the test: one hits `Runtime::render` directly (no encoder), one hits `render_to_mp4` with a beefier stroke.
 
-### ffmpeg stderr must be drained during encode (fixed 2026-04-28)
+### Any encoder subprocess pipe must be drained on a worker thread
 
-Historical note: `crates/manim-rs-encode/src/lib.rs` originally captured
-ffmpeg's stderr into a pipe and only read it after `wait()` on encoder
-finish. For long renders with chatty libx264 output (warnings leak
-through even at `-loglevel error`), the kernel pipe could fill, blocking
-ffmpeg on `write(stderr)`, which stalls stdin → stalls our `push_frame`
-write → deadlock. Latent at the time the entry was written, never
-observed because tests + `-loglevel error` kept stderr small.
+Capturing a chatty subprocess pipe (libx264 warnings leak through `-loglevel error`) and only reading after `wait()` deadlocks: the kernel pipe fills → child blocks on `write(stderr)` → its stdin stalls → our `push_frame` blocks → we never reach `wait()`.
 
-**Fix shipped (perf.md N14):** `Encoder::start` spawns a background
-thread that line-reads stderr into a 64 KiB-capped `Arc<Mutex<String>>`.
-`finish` joins after `wait()`; `Drop` joins on abnormal shutdown.
-`NonZeroExit.stderr` reads the captured buffer rather than the pipe
-post-hoc. Deadlock shape no longer reachable.
-
-Kept here as institutional memory: any future encoder pipe (e.g.
-`-progress pipe:` for ffmpeg-native progress) needs the same drain
-discipline.
+`crates/manim-rs-encode/src/lib.rs` solved the original case (stderr) with a background line-reader into a 64 KiB-capped `Arc<Mutex<String>>`, joined by `finish` and `Drop`. Any future encoder pipe (`-progress pipe:` for ffmpeg-native progress, etc.) needs the same drain discipline at introduction, not after the deadlock.
 
 ### Pixel-exact snapshot constants are platform-pinned
 

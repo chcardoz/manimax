@@ -23,12 +23,18 @@ dev = [
     "pytest>=8",
     "ruff>=0.6",
 ]
+docs = [
+    "mkdocs-material>=9.5",
+    "mkdocstrings[python]>=0.26",
+    "markdown-exec>=1.9",
+]
 
 [tool.maturin]
 manifest-path = "crates/manim-rs-py/Cargo.toml"
 module-name = "manim_rs._rust"
 python-source = "python"
 features = ["manim-rs-py/extension-module"]
+exclude = ["docs/**/*", "mkdocs.yml", "site/**/*"]
 
 [tool.ruff]
 line-length = 100
