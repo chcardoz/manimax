@@ -40,7 +40,7 @@ square = Polyline(
 )
 scene.add(square)
 scene.play(
-    Translate(square, by=(2.0, 0.0, 0.0), duration=2.0, easing=Smooth()),
+    Translate(square, (2.0, 0.0, 0.0), 2.0, easing=Smooth()),
 )
 
 ir = scene.ir
