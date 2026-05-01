@@ -17,12 +17,17 @@ theme:
     - navigation.sections
     - toc.follow
   palette:
-    - scheme: default
-      primary: deep purple
-      toggle: { icon: material/weather-night, name: Switch to dark mode }
     - scheme: slate
-      primary: deep purple
+      primary: black
+      accent: grey
       toggle: { icon: material/weather-sunny, name: Switch to light mode }
+    - scheme: default
+      primary: black
+      accent: grey
+      toggle: { icon: material/weather-night, name: Switch to dark mode }
+
+extra_css:
+  - assets/theme.css
 
 plugins:
   - search
