@@ -1,7 +1,22 @@
 # Tex coverage
 
-**Status:** Slice E (Steps 1–5 shipped). Authoritative subset reference for what `Tex(src)` can render.
-**Pairs with:** `docs/decisions/0008-slice-e-decisions.md`, `docs/porting-notes/tex.md` (TODO Step 9), `tests/python/tex_corpus.py`.
+**Status:** Slice E shipped (Steps 1–8; Step 9 docs landing now). Authoritative subset reference for what `Tex(src)` can render.
+**Pairs with:** `docs/decisions/0008-slice-e-decisions.md`, `docs/porting-notes/tex.md`, `tests/python/tex_corpus.py`.
+
+Two parts of how the corpus actually looks today are load-bearing on
+ADR 0008's visual-bug fixes. They are mentioned inline below but
+worth pinning here so they don't get optimized away by an unrelated
+refactor:
+
+- **Glyph outline extraction at `OUTLINE_PPEM = 1024`** (ADR 0008
+  §C). Every glyph in every corpus expression goes through this. If
+  a future change "simplifies" by passing `Tex.scale` straight to
+  `swash::scaler::Scaler::size(..)`, the corpus will start showing
+  staircase scallops at any zoom > 1. Read the ADR before touching
+  `crates/manim-rs-text/src/glyph.rs`.
+- **`FILL_TOLERANCE = 0.001`** (ADR 0008 §D). Em-scaled geometry
+  needs ~1‰ of an em flatness, *not* lyon's default 0.25.
+  `FillOptions::default()` is wrong for everything in the corpus.
 
 Manimax's `Tex` runs on **RaTeX** (pure Rust, KaTeX-grammar subset). It is not full LaTeX. There is no `\usepackage`, no TikZ, no `chemfig`, no system `latex` install. The wheel ships KaTeX TTFs and that's the entire math typography stack.
 

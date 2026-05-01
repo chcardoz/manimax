@@ -206,7 +206,7 @@ Belongs to Slice F+ or its own slice. Resist scope creep:
 - [ ] `ffprobe out.mp4` reports expected dimensions / fps / codec / pix_fmt for both commands.
 - [ ] Visually: `Text` renders a recognizable string; `Tex` renders the formula with correct fraction, sum, sub/superscript layout; both at expected colors.
 - [ ] No system LaTeX or system font installed on the CI runner; both commands still pass.
-- [ ] Tex coverage corpus (30–50 expressions) all snapshot-stable with a single pinned `TEX_SNAPSHOT_TOLERANCE` constant; baselines green on macOS-arm64 dev *and* Linux/lavapipe CI.
+- [ ] ~~Tex coverage corpus (30–50 expressions) all snapshot-stable with a single pinned `TEX_SNAPSHOT_TOLERANCE` constant; baselines green on macOS-arm64 dev *and* Linux/lavapipe CI.~~ **Deferred** (2026-04-29). Step 6 shipped the corpus data + coverage doc only; the snapshot harness, baseline PNGs, `--update-snapshots` flag, and pinned tolerance constant did not land. Tracked in `docs/tex-coverage.md` "Snapshot tolerance" and `STATUS.md`. Visual review uses `python -m manim_rs frame` ad-hoc until the harness lands as its own slice or a Slice E.5 task.
 - [ ] `Tex(src, macros={...})` expands no-arg macros end-to-end.
 - [ ] In-process `compile_tex` and font caches measurably hit on a Tex scene with duplicate sources (verified via test-only probe, not timing).
 - [ ] `0012-text-via-cosmic-text-swash.md` written; `0008-slice-e-decisions.md` addended with the originally-Tex-only items (RaTeX bus-factor, upgrade triggers, `\newcommand` escalation path).
@@ -470,7 +470,95 @@ Step 6+ slice work: when writing a "this can't happen because the
 caller upstream validates" comment, prefer making it structurally
 true (panic, narrower type, `unreachable!`) over hoping callers obey.
 
-### Steps 6–9
+### Step 6 (data + doc; harness deferred)
 
-Not started.
+- **Plan vs reality.** The plan called for a full snapshot harness
+  parametrized over `tex_corpus.py` with a pinned
+  `TEX_SNAPSHOT_TOLERANCE` baselined cross-platform. What shipped:
+  the corpus data and the coverage doc — but no harness, no
+  baseline PNGs, no `--update-snapshots`, no tolerance constant. The
+  harness was deferred to its own follow-up because picking a
+  cross-platform tolerance requires CI runs against an actual lavapipe
+  target, which became its own scope. Documented in
+  `docs/tex-coverage.md` "Snapshot tolerance" and §5 above.
+- **Lesson:** "build a corpus" and "build a corpus harness" are two
+  steps, not one. The corpus is a written artifact (33 entries,
+  picked by distinct rendering machinery); the harness is a CI-shape
+  decision that interacts with ADR 0007. Conflating them was the
+  plan-side mistake — a future slice planning a snapshot pass should
+  separate the two.
+
+### Step 7 (Text — IR through Python)
+
+- **Tracked the plan tightly** through S7a → S7e. Sub-steps were
+  added during execution (the slice plan listed Step 7 as one
+  bullet; the actual landing went S7a font plumbing, S7b cosmic-text
+  adapter + IR, S7c eval fan-out + cache, S7d Python constructor,
+  S7e end-to-end render). The decomposition was natural, mirrored
+  the Tex sequence, and matched the working-rhythm note in
+  CLAUDE.md (one step at a time).
+- **Cache pattern.** Plan said `RwLock + Box::leak` (the §10
+  carry-over from the Tex font cache). Reality: Tex actually shipped
+  `Mutex<HashMap<blake3::Hash, Arc<Vec<Arc<Object>>>>>` because
+  `Box::leak` was never the actually-deployed shape — it was an
+  aspirational note from §11 that didn't survive contact. Text
+  matched Tex's actual shape rather than the plan's. Lesson:
+  re-read the *current* code, not the slice plan, before mirroring
+  a pattern called out in a retrospective.
+- **No Python `_rust.text_validate`.** The plan didn't require it,
+  but it was natural to ask "do we want a parallel to
+  `_rust.tex_validate`?" Answer: no. cosmic-text accepts any
+  UTF-8; there's nothing to validate beyond argument shape (size,
+  weight, align — all checked in Python). LaTeX has parse failures
+  worth surfacing at construction; UTF-8 strings don't.
+- **Stale `_rust` extension.** S7e initially panicked because the
+  loaded extension was the pre-S7c build. Caught fast in retrospect
+  — `cargo test` was green, but `cargo test` doesn't rebuild the
+  pyo3 extension; only `maturin develop` does. New entry in
+  `docs/gotchas.md`.
+
+### Step 8 (E2E + determinism + cache probe)
+
+- **Cache probe via Rust integration tests, not pyo3 counters.**
+  The plan suggested "a counter / probe behind a test-only feature
+  flag." Reality: the cleanest probe is `Arc::ptr_eq` on the
+  fan-out children of two Tex (or Text) instances sharing a source.
+  No pyo3 surface change, no test-only feature flag, no
+  conditionally-compiled instrumentation. Three tests in
+  `crates/manim-rs-eval/src/lib.rs` cover it
+  (`tex_cache_returns_same_arc_on_repeat`,
+  `duplicate_tex_sources_share_compiled_geometry`,
+  `duplicate_text_sources_share_compiled_geometry`). Lesson: when a
+  test wants to assert "X and Y refer to the same compiled object,"
+  prefer pointer-identity assertions over counters.
+- **Determinism is real and clean.** Three byte-determinism tests
+  in `tests/python/test_e2e_text_tex.py` cover Tex, Text, and a
+  combined Tex+Text+Polyline scene. All pass. The eval (HashMap
+  iteration over `BTreeMap`-ordered IR), cosmic-text shaping,
+  swash outlines, lyon tessellation, and in-process libx264 are
+  all deterministic in the current configuration. Logged in
+  `docs/performance.md` E7 with a note that the test is the canary
+  if a future change introduces nondeterminism.
+- **No determinism issues surfaced from the eval-time cache fan-out.**
+  The plan flagged HashMap iteration order as a likely culprit;
+  reality is that the cache *output* (the `Vec<Arc<Object>>`) is
+  produced by deterministic code paths (RaTeX layout, cosmic-text
+  shape, swash outline) and stored under a content-addressed key.
+  The HashMap's iteration order is irrelevant because we never
+  iterate it — we look up by key. Worth recording so the next
+  cache discussion doesn't relitigate this.
+
+### Step 9 (this commit)
+
+- **Plan vs reality.** Step 9's deliverables matched the plan: ADR
+  0012, ADR 0008 addendum, `docs/porting-notes/{tex,text}.md`,
+  performance/gotchas/tex-coverage appends, retrospective fill, and
+  STATUS.md. The plan got the renumbering right (0012 not 0009;
+  0009/0010/0011 already taken).
+- **Lesson:** the "two ADRs" guidance in §10 of the slice plan was
+  already wrong by the time Step 9 ran (consolidated 0008 ate the
+  Tex-side ADR, ADR 0012 ate the Text-side). The slice plan's
+  carry-over notes are a useful guide *as of when they were
+  written*; check ADR numbering against the actual `decisions/`
+  directory before pinning a number.
 

@@ -240,3 +240,70 @@ and writes RGBA8 → PNG via the `png` crate.
 - **Hold off and build the general-purpose API now.** Out-of-scope
   scope creep mid-Step-5; bigger design that deserves its own
   pass. Recorded as future work instead.
+
+---
+
+## G. Addendum (Step 9, 2026-04-30) — RaTeX bus-factor, upgrade triggers, `\newcommand` deferral
+
+These three items originally lived in the planned `0008-tex-via-ratex.md`
+ADR. When that doc was folded into this consolidated record they didn't
+survive the merge; landing them here so the load-bearing risk story
+isn't oral tradition.
+
+### Bus-factor mitigation
+
+RaTeX is a young (v0.1.x), single-maintainer crate. The library is MIT
+and ~24,500 LOC of vendorable Rust — no system deps, no `build.rs`
+trickery, no proc-macros besides what the parser uses internally. If
+upstream goes silent we vendor it into `crates/ratex-vendored/` in
+under a day: copy the source tree, patch the workspace `Cargo.toml`
+to point at the path dependency, retest the corpus. The fallback is
+costed, not theoretical — we'd rather not pay it, but we know what it
+costs (one focused day plus a per-bug-fix maintenance load).
+
+### When to upgrade RaTeX
+
+Pin policy: every `Cargo.toml` revision of any `ratex-*` crate is a
+**breaking change** until proven otherwise. Upgrade procedure:
+
+1. Bump the version in `Cargo.toml` workspace `[workspace.dependencies]`.
+2. Run `cargo test --workspace` — first-line check for type-shape
+   regressions in `DisplayList` / `DisplayItem` / `PathCommand`.
+3. Re-run the Tex corpus (`tests/python/test_tex_corpus.py` once the
+   harness lands; today: visual eyeball via `python -m manim_rs frame`).
+4. If any expression in the corpus changes its rendering — even
+   sub-pixel — investigate before merging. KaTeX font metrics can
+   shift between RaTeX releases; if the shift is intentional upstream,
+   re-baseline tolerance-snapshot images consciously and note in the
+   commit message.
+5. Update font-name resolution in `manim-rs-text/src/font.rs` if the
+   `ratex-katex-fonts` enum changed (slice plan §6.3 gotcha).
+
+A version bump that touches `DisplayItem` / `PathCommand` shape requires
+re-reading `crates/manim-rs-tex/src/adapter.rs` end-to-end before merge,
+because the adapter pattern-matches every variant. Don't trust the
+compiler alone — a new variant gets caught, but a renamed field in an
+existing variant flows through as a different translation silently.
+
+### `\newcommand` deferral
+
+KaTeX (and therefore RaTeX) supports macro definitions only via host-
+language injection, not via `\newcommand{...}{...}` parsed from source.
+For Slice E this means:
+
+- **No-arg macros** (`\R → \mathbb{R}`) work via Python-side string
+  pre-expansion (§E above), and the IR ships `macros={}` so the cache
+  key stays clean (§B).
+- **Argument macros** (`\norm{x} → \lVert x \rVert`) are not supported.
+  Python-side string substitution can't reliably handle them — recursive
+  argument capture across nested braces is the same problem RaTeX
+  itself doesn't expose, just relocated.
+- **Escalation path**, when a real user needs argument macros: vendor
+  `ratex-parser`, patch its macro table to accept user-supplied
+  definitions, expose them through the `Tex(..., tex_macros=...)`
+  contract. Estimated half-day; not worth doing on speculation.
+
+The longer-term path for full LaTeX fidelity (`engine="latex"` with
+system `latex` + `dvisvgm --no-fonts`) covers the same use case more
+cleanly and doesn't touch RaTeX. Ship that opt-in when a user hits
+a wall — not before.

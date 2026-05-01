@@ -552,6 +552,70 @@ since both types live outside `manim-rs-py`. Two call sites
 `.map_err(|e| PyRuntimeError::new_err(format!("X failed: {e}")))?`
 to `.map_err(runtime_err_to_pyerr)?`. Discharges future-directions F7.
 
+### E4. Bundled-font wheel size (Slice E ship)
+
+Slice E adds `crates/manim-rs-text/fonts/Inter-Regular.ttf` (~310 KB)
+plus the `ratex-katex-fonts` bundle (~1.5 MB across the seven KaTeX
+TTFs). The pre-Slice-E wheel was small enough that the contribution is
+visible: built artifact grew by roughly **2 MB**. ADR 0008 §wheel and
+ADR 0012 cover the trade-off.
+
+Levers for a future trim pass: lazy-load fonts via the `font=...`
+parameter (i.e. drop the bundle and require users to point at a font
+file), or compress at wheel-build time. Neither is worth doing today
+— 2 MB on a wheel that already pulls in wgpu (~10 MB compiled
+artifacts) is in the noise.
+
+### E5. RaTeX parse+layout cost vs. eval+raster (Slice E ship)
+
+Empirically sub-millisecond per `compile_tex` call for the corpus
+expressions tested in Slice E (no expression in the corpus exceeds
+~50 glyphs). Two `compile_tex` invocations per Tex (one from
+`tex_validate` at Python construction, one from the Evaluator's first
+fan-out — see E3 above) still don't show in the trace under
+`--trace-json`. The expensive part of a Tex render is the same as
+a Polyline render: lyon tessellation of em-scaled paths at
+`FILL_TOLERANCE = 0.001`, then GPU dispatch + readback + encode.
+Slice E §11 retrospective notes this without a measurement; this
+entry pins the observation so a future perf pass doesn't go hunting
+for a parser bottleneck that isn't there.
+
+If a corpus run ever shows RaTeX in the hot spans, E3 is the natural
+next step (cache the parsed `DisplayList` on the Python object and
+hand it to Rust via a parallel pyo3 path).
+
+### E6. `compile_text` / `compile_tex` cache hit rates on the Slice E §1 scenes
+
+Confirmed via the Step 8 cache-probe tests
+(`tests/python/test_e2e_text_tex.py` + integration tests in
+`crates/manim-rs-eval/src/lib.rs`):
+
+- **Tex:** 100 % hit rate after the first compile within an
+  `Evaluator`. The Step 8 combined scene has one Tex source rendered
+  across 60 frames → one parse+layout, 59 cache hits. Every
+  `Tex(src=…)` instance in a single render compiles once.
+- **Text:** Same shape. Step 8's TextScene renders 90 frames sharing
+  one shaped layout. The cache is content-addressed by
+  `(src, font, weight, size, color, align)` — duplicate `Text(...)`
+  instances at different positions or under different transforms
+  share geometry via `Arc::ptr_eq`-confirmed pointer equality.
+
+No timing instrumentation through the cache yet; if this ever shows
+in a flame graph, the lever is the same one already documented in E3
+(skip the `tex_validate` re-parse at construction).
+
+### E7. Determinism of cosmic-text + libx264 across re-renders (Slice E ship)
+
+Step 8 added byte-determinism tests covering Tex, Text, and a combined
+Tex+Text+Polyline scene. Two consecutive `_rust.render_to_mp4` calls
+with identical IR produce **byte-identical** mp4s. Empirical confirmation
+that the eval (HashMap iteration order), cosmic-text shaping, swash
+outline extraction, lyon tessellation, MSAA resolve, and the in-process
+libx264 encoder are all deterministic in Manimax's current configuration.
+Worth flagging in case a future encoder change (parallel slice threading,
+psnr-only motion estimation off, etc.) re-introduces nondeterminism —
+the test in `tests/python/test_e2e_text_tex.py` is the canary.
+
 ### E3. `tex_validate` runs RaTeX parse+layout twice per Tex (once at construction, once at compile)
 
 Python's `Tex.__init__` calls `_rust.tex_validate` after macro

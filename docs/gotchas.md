@@ -240,6 +240,73 @@ Symptom that surfaces this: the path is geometrically right (closed contours, co
 
 Caught by visual inspection during Slice E Step 5, not by any test in the corpus. Tests that *would* catch it: pin `bbox` to a value derived from the curve (not just non-degenerate), or do a raster-snapshot at `Tex.scale=4+`.
 
+### `cargo test` does not rebuild the pyo3 extension; stale `_rust` panics
+
+Slice E Step 7 hit this. Rust changes in `crates/manim-rs-eval`
+landed and `cargo test --workspace` was green. The Python integration
+test then panicked with `unreachable: Object::Text must be expanded by
+Evaluator::eval_at` — because the loaded `manim_rs._rust` extension
+was the pre-S7c build, and only the Rust-only test path saw the new
+fan-out arm.
+
+**Fix:** after any change in a crate that ends up inside the pyo3
+extension (`manim-rs-py` and everything it depends on), run
+`source .venv/bin/activate && maturin develop` *before* running
+pytest. cargo's incremental build won't help — the .so/.dylib
+loaded by Python is built by maturin, not by cargo, and lives in
+`.venv/lib/python*/site-packages/manim_rs/_rust*.so`.
+
+CLAUDE.md's "Day-to-day" section already lists `maturin develop` as
+the rebuild step. The trap is that test-driven workflows happily
+ship the Rust tests and skip the Python suite for a session, then
+get bitten on the next pytest run that exercises the boundary.
+
+### cosmic-text `FontSystem::new()` does a system font scan that breaks hermetic tests
+
+cosmic-text's default `FontSystem::new()` invokes
+`fontdb::Database::load_system_fonts()` on first use. On a dev box
+that's hundreds of fonts, ~100 ms of init. On CI runners with sparse
+font sets the result diverges from local; on test machines with
+*different* system fonts the same call resolves a `Family::Name`
+lookup to different bytes, breaking determinism.
+
+**Fix:** seed your own `fontdb::Database` with `load_font_data` from
+known bytes, then construct via `FontSystem::new_with_locale_and_db`.
+`crates/manim-rs-text/src/cosmic.rs::font_system` does exactly this
+and wraps the result in an `OnceLock<Mutex<FontSystem>>` so the seed
+runs once per process. Add new fonts via `db.load_font_data(...)`
+inside the same `OnceLock` init; never mutate the database after
+publication.
+
+If you're tempted to "let users mix in system fonts," ADR 0012 covers
+why we don't — determinism + reproducibility + hermetic tests
+outweigh convenience. The `Text(..., font="path/to.ttf")` parameter
+is the supported escape hatch.
+
+### Snapshot tolerance values picked on macOS-arm64 dev usually need to grow on Linux/lavapipe CI
+
+When/if Slice E's Tex corpus harness lands (currently deferred per
+slice plan §STATUS), the `TEX_SNAPSHOT_TOLERANCE` constant must be
+chosen to pass on **both** macOS-arm64 + Metal (the dev target) and
+Linux + lavapipe (the CI target). Slice C/D experience: these two
+backends produce non-trivially different rasterizations of the same
+geometry — sub-pixel coverage thresholds, MSAA pattern, sRGB
+linearization order, and lavapipe's CPU-side scan conversion all
+diverge from Metal in small but systematic ways.
+
+**Fix when baselining:** generate baselines on macOS, then run the
+full corpus through CI before pinning the tolerance. The CI run will
+likely surface 5–15% of pixels that differ by one or two channel
+values; pick a max-channel-delta + max-percent-pixels-differing pair
+that covers the worst case in the corpus with ~2× headroom for
+future drift. ADR 0007 (CI on lavapipe) is the load-bearing
+constraint here.
+
+Until the harness ships, anyone re-rendering corpus expressions for
+visual review should use `python -m manim_rs frame ...` (ADR 0008
+§F) to spot-check on dev. Don't write a test that pins the macOS
+tolerance and assume CI will pass — it won't.
+
 ### lyon `FillOptions::DEFAULT.tolerance` (0.25) is wildly too coarse for em-scaled geometry
 
 `FillOptions::default()` ships with `tolerance = 0.25`, a budget calibrated for SVGs in *pixel* coordinates. Glyph outlines (and any Tex-derived geometry) arrive in *em*-scaled world units where 1 em ≈ 1 world unit. A 0.25 budget on em-scaled curves flattens an `o` into an octagon.
