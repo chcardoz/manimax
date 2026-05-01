@@ -35,6 +35,9 @@ from manim_rs import (
     _rust,
     ir,
 )
+from manim_rs.discovery import load_scene
+
+EXAMPLES_DIR = Path(__file__).resolve().parents[2] / "examples"
 
 
 def _ffprobe(path: Path, fields: str) -> str:
@@ -65,20 +68,16 @@ def _sha256(path: Path) -> str:
 
 
 def _build_text_scene() -> Scene:
-    """Mirror `examples/text_scene.py`'s TextScene without going through the
-    discovery import path — keeps the test hermetic to the example file's
-    contents while still exercising the same authoring API."""
-    from examples.text_scene import TextScene
-
-    scene = TextScene(fps=30)
+    """Load the checked-in text example without relying on repo-root sys.path."""
+    scene_cls = load_scene(EXAMPLES_DIR / "text_scene.py", "TextScene")
+    scene = scene_cls(fps=30)
     scene.construct()
     return scene
 
 
 def _build_tex_scene() -> Scene:
-    from examples.tex_scene import TexScene
-
-    scene = TexScene(fps=30)
+    scene_cls = load_scene(EXAMPLES_DIR / "tex_scene.py", "TexScene")
+    scene = scene_cls(fps=30)
     scene.construct()
     return scene
 

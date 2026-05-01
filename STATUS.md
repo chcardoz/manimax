@@ -1,11 +1,13 @@
 # Status
 
-**Last updated:** 2026-04-30
-**Current slice:** none (Slice E complete; next slice unscoped)
+**Last updated:** 2026-05-01
+**Current slice:** none (CI fix after Slice E/docs work)
 
-Slice E (text + math) shipped end-to-end on `chcardoz/vancouver-v1` ahead of `main` (`8df2808`). Both §1 acceptance commands work: `Text("...")` and `Tex(r"...")` render correctly with bundled fonts, no system LaTeX or system font required. Per-`Evaluator` source-keyed caches for Tex and Text geometry; `compile_tex` / `compile_text` measurably hit on duplicate sources; byte-determinism across re-renders.
+CI failure `test` / GitHub Job `73898676458` was four failures in `tests/python/test_e2e_text_tex.py`: helpers imported `examples.text_scene` / `examples.tex_scene` as top-level modules, but the CI editable/maturin environment did not put the repo root on `sys.path`.
 
-This session collapsed the docs tree into `docs/public/` and wired up MkDocs Material with auto-deploy via `.github/workflows/docs.yml`. Old structure (`docs/architecture.md`, `docs/decisions/`, `docs/slices/`, `docs/porting-notes/`, etc.) is gone — see `docs/public/contributing/index.md` for the new on-ramp.
+This session changed those helpers to load the checked-in example files by path via `manim_rs.discovery.load_scene`, preserving coverage of the real examples without depending on ambient import path. Added the CI import-path trap to `docs/public/contributing/gotchas.md`.
+
+Slice E (text + math) remains shipped end-to-end. Both §1 acceptance scenes render with bundled fonts, no system LaTeX or system font required. Per-`Evaluator` source-keyed caches for Tex and Text geometry; `compile_tex` / `compile_text` measurably hit on duplicate sources; byte-determinism across re-renders.
 
 ## Explicitly deferred
 
@@ -14,13 +16,7 @@ This session collapsed the docs tree into `docs/public/` and wired up MkDocs Mat
 
 ## Next action
 
-Pick the next slice. Three candidates, all reasonable:
-
-- **Tex snapshot harness as a mini-slice** — picks up deferred Step 6.
-- **Slice E.5 — SVG import** — adjacent to glyph outlines, small-but-real, unblocks SVGMobject.
-- **Slice F — 3D pipeline** — surface pipeline, depth buffer, phi/theta camera; reintroduces `flat_stroke`/`unit_normal` from deferred Slice D §4. Unlocks 3D text.
-
-`AGENTS.md`'s "Read before you touch anything" list is the on-ramp.
+If CI is green, pick the next slice. Leading candidates: Tex snapshot harness mini-slice, Slice E.5 SVG import, or Slice F 3D pipeline.
 
 ## Blockers
 

@@ -143,6 +143,17 @@ Caught by: `test_scene_roundtrips_through_rust` (via `_wide_scene`, which distri
 
 ## Testing / verification
 
+### Repo-root example imports are not stable in CI
+
+Tests that need checked-in example scenes should load them by file path (for
+example via `manim_rs.discovery.load_scene`) instead of importing
+`examples.*`. Editable/maturin installs do not guarantee the repository root is
+on `sys.path` in every pytest invocation, even though the `python/` package
+source is importable. The failure mode is `ModuleNotFoundError: No module named
+'examples'` while running from CI or from outside the repo root.
+
+Fix lives in: `tests/python/test_e2e_text_tex.py`.
+
 ### ffprobe is the ground truth for video tests
 
 `ffprobe -v error -select_streams v:0 -count_frames -show_entries stream=width,height,avg_frame_rate,codec_name,pix_fmt,nb_read_frames -of default=noprint_wrappers=1 <path>` returns deterministic, parseable output. Use it over file-size heuristics or human eyeballing.
