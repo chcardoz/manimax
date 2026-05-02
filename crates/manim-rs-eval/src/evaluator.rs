@@ -210,38 +210,49 @@ impl Evaluator {
                 color_override,
             };
 
-            if let Object::Tex {
-                src,
-                color,
-                scale: tex_scale,
-                ..
-            } = &**object
-            {
-                let children = self.compile_tex_cached(src, *color);
-                let combined_scale = scale * *tex_scale;
-                for child in children.iter() {
-                    objects.push(make_state(Arc::clone(child), combined_scale));
+            // Exhaustive match — adding a new `Object` variant forces a
+            // decision here between "passthrough" and "fan out", instead of
+            // silently defaulting to passthrough.
+            match &**object {
+                Object::Tex {
+                    src,
+                    color,
+                    scale: tex_scale,
+                    ..
+                } => {
+                    let children = self.compile_tex_cached(src, *color);
+                    let combined_scale = scale * *tex_scale;
+                    for child in children.iter() {
+                        objects.push(make_state(Arc::clone(child), combined_scale));
+                    }
                 }
-            } else if let Object::Text {
-                src,
-                font,
-                weight,
-                size,
-                color,
-                align,
-            } = &**object
-            {
-                // Text has no IR `scale` field — `size` is baked into the
-                // shaped geometry (cosmic-text adapter post-multiplies by
-                // `size / SHAPE_PPEM`). Track-resolved scale passes through
-                // unchanged.
-                let children =
-                    self.compile_text_cached(src, font.as_deref(), *weight, *size, *color, *align);
-                for child in children.iter() {
-                    objects.push(make_state(Arc::clone(child), scale));
+                Object::Text {
+                    src,
+                    font,
+                    weight,
+                    size,
+                    color,
+                    align,
+                } => {
+                    // Text has no IR `scale` field — `size` is baked into
+                    // the shaped geometry (cosmic-text adapter post-multiplies
+                    // by `size / SHAPE_PPEM`). Track-resolved scale passes
+                    // through unchanged.
+                    let children = self.compile_text_cached(
+                        src,
+                        font.as_deref(),
+                        *weight,
+                        *size,
+                        *color,
+                        *align,
+                    );
+                    for child in children.iter() {
+                        objects.push(make_state(Arc::clone(child), scale));
+                    }
                 }
-            } else {
-                objects.push(make_state(Arc::clone(object), scale));
+                Object::Polyline { .. } | Object::BezPath { .. } => {
+                    objects.push(make_state(Arc::clone(object), scale));
+                }
             }
         }
         SceneState { objects }
