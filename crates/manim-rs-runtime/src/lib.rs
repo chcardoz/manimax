@@ -64,12 +64,7 @@ impl RenderSetup {
         let meta = scene.metadata.clone();
         let runtime = Runtime::new(meta.resolution.width, meta.resolution.height)?;
         let evaluator = Evaluator::new(scene);
-        let background = [
-            meta.background[0] as f64,
-            meta.background[1] as f64,
-            meta.background[2] as f64,
-            meta.background[3] as f64,
-        ];
+        let background = meta.background.map(f64::from);
         Ok(Self {
             runtime,
             evaluator,
