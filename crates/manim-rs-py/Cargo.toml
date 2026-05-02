@@ -25,10 +25,7 @@ manim-rs-ir = { workspace = true }
 manim-rs-runtime = { workspace = true }
 manim-rs-eval = { workspace = true }
 manim-rs-tex = { workspace = true }
-manim-rs-raster = { workspace = true }
-manim-rs-encode = { workspace = true }
 pyo3 = { workspace = true }
 pythonize = { workspace = true }
 serde_json = { workspace = true }
-tracing = { workspace = true }
 tracing-subscriber = { workspace = true }
