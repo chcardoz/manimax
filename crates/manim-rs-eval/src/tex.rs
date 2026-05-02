@@ -20,9 +20,10 @@
 //! `WORLD_UNITS_PER_EM` (= 1.0) gives a formula at scale=1.0 a width on
 //! the order of one to a few world units.
 
-use kurbo::{BezPath, PathEl};
-use manim_rs_ir::{Fill, Object, PathVerb, RgbaSrgb};
+use manim_rs_ir::{Fill, Object, RgbaSrgb};
 use manim_rs_tex::TexError;
+
+use crate::bezpath::bezpath_to_verbs;
 
 /// Compile a Tex source into a list of fill-only `Object::BezPath`s.
 ///
@@ -31,7 +32,7 @@ use manim_rs_tex::TexError;
 /// items left at default-black. Returns the underlying `TexError` on
 /// parse failure so the caller can decide between "panic on a contract
 /// the constructor was supposed to enforce" and "surface to the user."
-pub fn compile_tex(src: &str, color: RgbaSrgb) -> Result<Vec<Object>, TexError> {
+pub(crate) fn compile_tex(src: &str, color: RgbaSrgb) -> Result<Vec<Object>, TexError> {
     let display_list = manim_rs_tex::tex_to_display_list(src)?;
     let path_color_pairs = manim_rs_tex::display_list_to_bezpath(&display_list);
 
@@ -56,30 +57,6 @@ fn resolve_color(item: manim_rs_tex::Color, ir_color: RgbaSrgb) -> RgbaSrgb {
     } else {
         [item.r, item.g, item.b, item.a]
     }
-}
-
-fn bezpath_to_verbs(path: &BezPath) -> Vec<PathVerb> {
-    path.elements()
-        .iter()
-        .map(|el| match *el {
-            PathEl::MoveTo(p) => PathVerb::MoveTo {
-                to: [p.x as f32, p.y as f32, 0.0],
-            },
-            PathEl::LineTo(p) => PathVerb::LineTo {
-                to: [p.x as f32, p.y as f32, 0.0],
-            },
-            PathEl::QuadTo(c, p) => PathVerb::QuadTo {
-                ctrl: [c.x as f32, c.y as f32, 0.0],
-                to: [p.x as f32, p.y as f32, 0.0],
-            },
-            PathEl::CurveTo(c1, c2, p) => PathVerb::CubicTo {
-                ctrl1: [c1.x as f32, c1.y as f32, 0.0],
-                ctrl2: [c2.x as f32, c2.y as f32, 0.0],
-                to: [p.x as f32, p.y as f32, 0.0],
-            },
-            PathEl::ClosePath => PathVerb::Close {},
-        })
-        .collect()
 }
 
 #[cfg(test)]

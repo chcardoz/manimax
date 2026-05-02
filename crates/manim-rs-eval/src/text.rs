@@ -17,13 +17,14 @@
 //! shaper that resolves user-supplied fonts won't share entries with the
 //! Inter-only path.
 
-use kurbo::{BezPath, PathEl};
-use manim_rs_ir::{Fill, Object, PathVerb, RgbaSrgb, TextAlign as IrAlign, TextWeight as IrWeight};
+use manim_rs_ir::{Fill, Object, RgbaSrgb, TextAlign as IrAlign, TextWeight as IrWeight};
 use manim_rs_text::{TextAlign, TextWeight, text_to_bezpaths};
+
+use crate::bezpath::bezpath_to_verbs;
 
 /// Compile a text source + style into a list of fill-only `Object::BezPath`s,
 /// each colored to the IR's `color`. `font` is reserved (see module doc).
-pub fn compile_text(
+pub(crate) fn compile_text(
     src: &str,
     _font: Option<&str>,
     weight: IrWeight,
@@ -56,30 +57,6 @@ fn ir_align(a: IrAlign) -> TextAlign {
         IrAlign::Center => TextAlign::Center,
         IrAlign::Right => TextAlign::Right,
     }
-}
-
-fn bezpath_to_verbs(path: &BezPath) -> Vec<PathVerb> {
-    path.elements()
-        .iter()
-        .map(|el| match *el {
-            PathEl::MoveTo(p) => PathVerb::MoveTo {
-                to: [p.x as f32, p.y as f32, 0.0],
-            },
-            PathEl::LineTo(p) => PathVerb::LineTo {
-                to: [p.x as f32, p.y as f32, 0.0],
-            },
-            PathEl::QuadTo(c, p) => PathVerb::QuadTo {
-                ctrl: [c.x as f32, c.y as f32, 0.0],
-                to: [p.x as f32, p.y as f32, 0.0],
-            },
-            PathEl::CurveTo(c1, c2, p) => PathVerb::CubicTo {
-                ctrl1: [c1.x as f32, c1.y as f32, 0.0],
-                ctrl2: [c2.x as f32, c2.y as f32, 0.0],
-                to: [p.x as f32, p.y as f32, 0.0],
-            },
-            PathEl::ClosePath => PathVerb::Close {},
-        })
-        .collect()
 }
 
 #[cfg(test)]
