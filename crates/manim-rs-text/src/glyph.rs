@@ -39,13 +39,21 @@ const OUTLINE_PPEM: f32 = 1024.0;
 /// If the codepoint has no charmap entry the font's `.notdef` glyph is
 /// outlined instead — making missing-glyph rendering visible rather than
 /// silently empty, which matches how typical text engines behave.
-pub fn glyph_to_bezpath(font: &[u8], char_code: u32, scale: f32) -> BezPath {
+///
+/// Callers shaping many glyphs in a row should hold a single `ScaleContext`
+/// for the whole batch; constructing one allocates scratch buffers that
+/// swash's design intends to reuse.
+pub fn glyph_to_bezpath(
+    font: &[u8],
+    char_code: u32,
+    scale: f32,
+    ctx: &mut ScaleContext,
+) -> BezPath {
     let Some(font_ref) = FontRef::from_index(font, 0) else {
         return BezPath::new();
     };
     let glyph_id = font_ref.charmap().map(char_code);
-    let mut ctx = ScaleContext::new();
-    glyph_to_bezpath_with_ctx(font_ref, &mut ctx, glyph_id, scale)
+    glyph_to_bezpath_with_ctx(font_ref, ctx, glyph_id, scale)
 }
 
 /// Like [`glyph_to_bezpath`] but reuses a caller-owned `ScaleContext` and a
@@ -133,7 +141,8 @@ mod tests {
     use kurbo::Shape;
 
     fn assert_glyph_renders(font: &[u8], ch: char, label: &str) {
-        let path = glyph_to_bezpath(font, ch as u32, 64.0);
+        let mut ctx = ScaleContext::new();
+        let path = glyph_to_bezpath(font, ch as u32, 64.0, &mut ctx);
         assert!(
             !path.elements().is_empty(),
             "{label}: glyph {ch:?} produced an empty path"
@@ -167,7 +176,8 @@ mod tests {
     /// y-flip would push 'A' below baseline and trip this.
     #[test]
     fn uppercase_a_sits_above_baseline() {
-        let path = glyph_to_bezpath(default_text_font(), 'A' as u32, 64.0);
+        let mut ctx = ScaleContext::new();
+        let path = glyph_to_bezpath(default_text_font(), 'A' as u32, 64.0, &mut ctx);
         let bbox = path.bounding_box();
         assert!(
             bbox.min_y() >= -2.0,
@@ -185,7 +195,8 @@ mod tests {
     /// Belt-and-braces against a hidden flip elsewhere.
     #[test]
     fn lowercase_g_descends_below_baseline() {
-        let path = glyph_to_bezpath(default_text_font(), 'g' as u32, 64.0);
+        let mut ctx = ScaleContext::new();
+        let path = glyph_to_bezpath(default_text_font(), 'g' as u32, 64.0, &mut ctx);
         let bbox = path.bounding_box();
         assert!(
             bbox.min_y() < -1.0,
