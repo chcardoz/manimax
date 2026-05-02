@@ -11,5 +11,5 @@ mod font;
 mod glyph;
 
 pub use cosmic::{TextAlign, TextWeight, text_to_bezpaths};
-pub use font::{default_text_font, katex_font};
-pub use glyph::{glyph_to_bezpath, glyph_to_bezpath_by_id};
+pub use font::katex_font;
+pub use glyph::glyph_to_bezpath;

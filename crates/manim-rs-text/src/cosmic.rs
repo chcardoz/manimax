@@ -31,9 +31,11 @@ use std::sync::{Mutex, OnceLock};
 use cosmic_text::fontdb;
 use cosmic_text::{Align, Attrs, Buffer, Family, FontSystem, Metrics, Shaping, Weight, Wrap};
 use kurbo::{Affine, BezPath};
+use swash::FontRef;
+use swash::scale::ScaleContext;
 
 use crate::font::default_text_font;
-use crate::glyph::glyph_to_bezpath_by_id;
+use crate::glyph::glyph_to_bezpath_with_ctx;
 
 /// Internal shaping ppem. Layout runs at this size; the final affine
 /// post-multiplies by `size / SHAPE_PPEM` to land at the caller's units.
@@ -61,9 +63,9 @@ pub enum TextWeight {
     Bold,
 }
 
-impl TextWeight {
-    fn to_cosmic(self) -> Weight {
-        match self {
+impl From<TextWeight> for Weight {
+    fn from(w: TextWeight) -> Self {
+        match w {
             TextWeight::Regular => Weight::NORMAL,
             TextWeight::Bold => Weight::BOLD,
         }
@@ -80,9 +82,9 @@ pub enum TextAlign {
     Right,
 }
 
-impl TextAlign {
-    fn to_cosmic(self) -> Align {
-        match self {
+impl From<TextAlign> for Align {
+    fn from(a: TextAlign) -> Self {
+        match a {
             TextAlign::Left => Align::Left,
             TextAlign::Center => Align::Center,
             TextAlign::Right => Align::Right,
@@ -138,8 +140,8 @@ pub fn text_to_bezpaths(
 
     let attrs = Attrs::new()
         .family(Family::Name(INTER_FAMILY))
-        .weight(weight.to_cosmic());
-    buffer.set_text(src, &attrs, Shaping::Advanced, Some(align.to_cosmic()));
+        .weight(weight.into());
+    buffer.set_text(src, &attrs, Shaping::Advanced, Some(align.into()));
     buffer.shape_until_scroll(&mut fs, false);
 
     // Anchor: translate the entire layout so the first line's baseline lands
@@ -155,6 +157,7 @@ pub fn text_to_bezpaths(
     let post_scale = Affine::scale(f64::from(size) / f64::from(SHAPE_PPEM));
 
     let mut out: Vec<(BezPath, [f32; 4])> = Vec::new();
+    let mut scale_ctx = ScaleContext::new();
 
     for run in buffer.layout_runs() {
         for glyph in run.glyphs {
@@ -165,7 +168,11 @@ pub fn text_to_bezpaths(
             let Some(font) = fs.get_font(glyph.font_id, glyph.font_weight) else {
                 continue;
             };
-            let mut path = glyph_to_bezpath_by_id(font.data(), glyph.glyph_id, SHAPE_PPEM);
+            let Some(font_ref) = FontRef::from_index(font.data(), 0) else {
+                continue;
+            };
+            let mut path =
+                glyph_to_bezpath_with_ctx(font_ref, &mut scale_ctx, glyph.glyph_id, SHAPE_PPEM);
             if path.is_empty() {
                 continue;
             }
@@ -178,11 +185,9 @@ pub fn text_to_bezpaths(
             let pos_x = glyph.x + glyph.font_size * glyph.x_offset;
             let pos_y_down =
                 glyph.y + run.line_y - glyph.font_size * glyph.y_offset - baseline_anchor;
-            path.apply_affine(Affine::translate((
-                f64::from(pos_x),
-                -f64::from(pos_y_down),
-            )));
-            path.apply_affine(post_scale);
+            let glyph_xform =
+                post_scale * Affine::translate((f64::from(pos_x), -f64::from(pos_y_down)));
+            path.apply_affine(glyph_xform);
 
             out.push((path, [1.0, 1.0, 1.0, 1.0]));
         }

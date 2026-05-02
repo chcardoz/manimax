@@ -44,18 +44,20 @@ pub fn glyph_to_bezpath(font: &[u8], char_code: u32, scale: f32) -> BezPath {
         return BezPath::new();
     };
     let glyph_id = font_ref.charmap().map(char_code);
-    glyph_to_bezpath_by_id(font, glyph_id, scale)
+    let mut ctx = ScaleContext::new();
+    glyph_to_bezpath_with_ctx(font_ref, &mut ctx, glyph_id, scale)
 }
 
-/// Like [`glyph_to_bezpath`] but takes a pre-resolved glyph id. Used by the
-/// shaped-text path (cosmic-text already returned `glyph_id` from layout, so
-/// we skip the redundant charmap lookup).
-pub fn glyph_to_bezpath_by_id(font: &[u8], glyph_id: u16, scale: f32) -> BezPath {
-    let Some(font_ref) = FontRef::from_index(font, 0) else {
-        return BezPath::new();
-    };
-
-    let mut ctx = ScaleContext::new();
+/// Like [`glyph_to_bezpath`] but reuses a caller-owned `ScaleContext` and a
+/// pre-parsed `FontRef`. Hot paths shaping many glyphs in a row should hold
+/// one `ScaleContext` for the whole batch — `ScaleContext::new()` allocates
+/// scratch buffers, and swash's design intent is one-per-thread reuse.
+pub(crate) fn glyph_to_bezpath_with_ctx(
+    font_ref: FontRef<'_>,
+    ctx: &mut ScaleContext,
+    glyph_id: u16,
+    scale: f32,
+) -> BezPath {
     let mut scaler = ctx.builder(font_ref).size(OUTLINE_PPEM).build();
     let Some(outline) = scaler.scale_outline(glyph_id) else {
         return BezPath::new();
