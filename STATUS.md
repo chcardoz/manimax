@@ -4,7 +4,9 @@
 **Current branch:** `chcardoz/montreal-v1`
 **Current slice:** post-Slice-E refactor pass (no PR yet)
 
-Seven unmerged refactor commits on top of Slice E (#8, merged 2026-05-01). Tree is clean, no PR opened. All changes are internal cleanup — no IR, no public Python API, no schema changes. Both `pytest tests/python` (136 passes, ~25s) and ruff are green; `cargo test --workspace` not re-run this session.
+Twelve unmerged refactor commits on top of Slice E (#8, merged 2026-05-01). Tree is clean, no PR opened. All changes are internal cleanup — no IR, no public Python API, no schema changes. `cargo test --workspace` not re-run end-to-end this session, but `cargo test -p <crate>` was green for every Rust crate touched (eval 38/38, tex 9/9, raster 38/38 across 12 binaries, runtime all green, encode lib smoke, py builds). Python tests last run earlier this branch (136 passes).
+
+Original seven-commit pass (2026-05-01):
 
 - `e44a451` raster: tighten visibility, share `FillTessellator`, drop align helper
 - `446386e` eval: extract shared `bezpath_to_verbs`, unify compile-cache helper across `tex.rs` / `text.rs` / `evaluator.rs`
@@ -14,21 +16,31 @@ Seven unmerged refactor commits on top of Slice E (#8, merged 2026-05-01). Tree 
 - `9138ed3` runtime: extract `RenderSetup`, propagate the png error chain
 - `30ef0d2` python: share coerce helpers, animation base, test fixtures
 
-The Python pass (`30ef0d2`, 11 files, +380/−487):
-- New `python/manim_rs/objects/_coerce.py` exposes shared `vec3` / `rgba` float-coerce helpers; replaces 8 inline triplet/quad coercions across `geometry.py` / `tex.py` / `text.py` / `animate/transforms.py`.
-- `animate/transforms.py` collapsed onto a `_SegmentAnimation` base — Translate / Rotate / ScaleBy / FadeIn / FadeOut / Colorize each declare `_VERB` / `_TRACK_CLS` / `_SEGMENT_CLS` and override `_endpoints()`; the per-class `emit()` boilerplate is gone.
-- `objects/text.py` derives `_VALID_WEIGHTS` / `_VALID_ALIGNS` from `typing.get_args(ir.TextWeight/TextAlign)` so the runtime check can't drift from the IR `Literal`.
-- `tests/python/conftest.py` centralizes `requires_ffprobe` / `requires_ffmpeg` markers, `ffprobe_stream(path, fields) -> dict`, `extract_frame_raw(...)`, `centroid_in_band(...)`. Five test files dropped their hand-rolled copies.
-- `test_e2e_text_tex.py` got module-scoped IR-payload fixtures so each example scene compiles once instead of twice.
+Code-quality polish pass added today (`/code-quality` loop across all 8 Rust crates):
+
+- `de02fa6` eval: exhaustive `match` for Tex/Text fan-out dispatch (was `if let / else if let / else` — silent passthrough on a future `Object` variant).
+- `431bd5e` tex: `WORLD_UNITS_PER_EM` `pub(crate)` → private; `display_list_to_bezpath` drops `Option<(BezPath, Color)>` indirection.
+- `34e0c4e` raster: `expand_stroke` carries between-segment state in a named `SegmentEnd` struct instead of a 5-tuple destructured 60 lines later.
+- `d5d0e6b` runtime: `meta.background.map(f64::from)` replaces a 4-line manual array literal.
+- `dc5345c` py: drop unused direct deps on `manim-rs-raster` / `manim-rs-encode` / `tracing` from `Cargo.toml` (raster + encode still in the dep tree via runtime; only the falsely-claimed direct fan-in goes).
+
+The crates with no diff this pass (`manim-rs-ir`, `manim-rs-text`, `manim-rs-encode`) were already at the bar — the original seven-commit pass had covered the candidates.
 
 ## Next action
 
-Open one or two PRs against `main` for the unmerged refactor pass — natural split is "Rust refactors" (six commits) and "Python simplify" (`30ef0d2`). Verify `cargo test --workspace` first. After merge, leading slice candidates: Tex snapshot harness mini-slice, Slice E.5 (SVG import), or Slice F (3D pipeline).
+Open one or two PRs against `main` for the unmerged refactor pass. Natural splits:
+
+- "Rust refactors" — eleven commits (`e44a451`, `446386e`, `9f146db`, `3158850`, `7e8f493`, `9138ed3`, plus today's `de02fa6` / `431bd5e` / `34e0c4e` / `d5d0e6b` / `dc5345c`).
+- "Python simplify" — `30ef0d2` alone.
+
+Verify `cargo test --workspace` and `pytest tests/python` clean before the PR. After merge, leading slice candidates: Tex snapshot harness mini-slice, Slice E.5 (SVG import), or Slice F (3D pipeline).
 
 ## Explicitly deferred (carried from prior session)
 
 - **Tex snapshot harness** (Slice E Step 6 follow-up): corpus + coverage doc shipped, but the parametrized snapshot test, baseline PNGs, `--update-snapshots` flag, and pinned `TEX_SNAPSHOT_TOLERANCE` did not. Cross-platform tolerance pinning needs Linux/lavapipe CI runs. Tracked in `docs/public/contributing/porting-from-manimgl.md` "Tex coverage > Snapshot tolerance".
 - **Baseline-PNG version of the Text render test.** Same blocker; the centroid-based check is the placeholder.
+- **`text_to_bezpaths` returns `Vec<(BezPath, [f32; 4])>` with always-white color.** The pair shape is anticipatory parity with `display_list_to_bezpath`; the eval consumer discards the color. Revisit when a markup-aware Text variant arrives — collapse to `Vec<BezPath>` then, or wire per-glyph color through.
+- **`__build_probe` returns the literal "manim_rs._rust: slice-c step 1".** Stale label but only `.startswith("manim_rs._rust")` is asserted; harmless. Update when the next slice touches the binding crate.
 
 ## Blockers
 
