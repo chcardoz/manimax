@@ -17,12 +17,10 @@ under the pinned `TEX_SNAPSHOT_TOLERANCE`.
 from __future__ import annotations
 
 import math
-import shutil
-import subprocess
 from pathlib import Path
 
-import numpy as np
 import pytest
+from conftest import centroid_in_band, extract_frame_raw, requires_ffmpeg
 from manim_rs import Text, _rust, ir
 from manim_rs.scene import Scene
 
@@ -115,7 +113,7 @@ def test_text_id_starts_unbound() -> None:
 # ----------------------------------------------------------------------------
 
 
-@pytest.mark.skipif(shutil.which("ffmpeg") is None, reason="ffmpeg not on PATH")
+@requires_ffmpeg
 def test_text_renders_visible_pixels_at_origin(tmp_path: Path) -> None:
     """`Text("HI")` produces non-trivial bright pixels in the expected region.
 
@@ -136,30 +134,10 @@ def test_text_renders_visible_pixels_at_origin(tmp_path: Path) -> None:
     out = tmp_path / "text_hi.mp4"
     _rust.render_to_mp4(ir.to_builtins(scene.ir), str(out))
 
-    raw = subprocess.run(
-        [
-            "ffmpeg",
-            "-v",
-            "error",
-            "-i",
-            str(out),
-            "-vframes",
-            "1",
-            "-f",
-            "rawvideo",
-            "-pix_fmt",
-            "rgba",
-            "-",
-        ],
-        capture_output=True,
-        check=True,
-    ).stdout
-    assert len(raw) == width * height * 4, f"unexpected frame size: {len(raw)}"
-
-    arr = np.frombuffer(raw, dtype=np.uint8).reshape(height, width, 4)
-    mask = (arr[..., 0] > 40) | (arr[..., 1] > 40) | (arr[..., 2] > 40)
-    ys, xs = np.nonzero(mask)
-    n = xs.size
+    arr = extract_frame_raw(out, width=width, height=height)
+    res = centroid_in_band(arr, threshold_any=True)
+    assert res is not None, "no bright pixels found"
+    cx, cy, n = res
     # Two glyphs at size=0.6 on a 480×270 canvas land around ~100 lit
     # pixels (size=0.6 em maps to ~50 px tall on this canvas). A blank
     # frame or a hard clip would drop below this floor; a runaway shape
@@ -168,7 +146,6 @@ def test_text_renders_visible_pixels_at_origin(tmp_path: Path) -> None:
     assert n > 50, f"too few bright pixels for 'HI': {n}"
     assert n < 5000, f"unreasonable bright pixel count for 'HI': {n}"
 
-    cx, cy = float(xs.mean()), float(ys.mean())
     # `align="left"` at origin → glyphs extend right of pixel 240. Centroid
     # must sit to the right of canvas center (allow a small margin for the
     # 'H' bowl extending leftward into x ≈ 240).

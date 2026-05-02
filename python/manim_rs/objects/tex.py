@@ -16,6 +16,7 @@ from __future__ import annotations
 import re
 
 from manim_rs import _rust, ir
+from manim_rs.objects._coerce import rgba as _rgba
 
 # A TeX control sequence is `\` + (one or more letters) OR `\` + (single
 # non-letter). For macro substitution we only care about control words
@@ -125,12 +126,7 @@ class Tex:
 
         self._id: int | None = None
         self.src: str = expanded
-        self.color: ir.RgbaSrgb = (
-            float(color[0]),
-            float(color[1]),
-            float(color[2]),
-            float(color[3]),
-        )
+        self.color: ir.RgbaSrgb = _rgba(color)
         self.scale: float = float(scale)
 
     def to_ir(self) -> ir.Tex:

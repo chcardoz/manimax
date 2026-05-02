@@ -8,13 +8,13 @@ shimmed.
 
 from __future__ import annotations
 
-import shutil
 import subprocess
 import sys
 import textwrap
 from pathlib import Path
 
 import pytest
+from conftest import ffprobe_stream, requires_ffprobe
 from manim_rs.cli import app
 from typer.testing import CliRunner
 
@@ -42,28 +42,6 @@ def scene_file(tmp_path: Path) -> Path:
     return p
 
 
-def _ffprobe(path: Path) -> str:
-    probe = subprocess.run(
-        [
-            "ffprobe",
-            "-v",
-            "error",
-            "-select_streams",
-            "v:0",
-            "-count_frames",
-            "-show_entries",
-            "stream=width,height,avg_frame_rate,codec_name,pix_fmt,nb_read_frames",
-            "-of",
-            "default=noprint_wrappers=1",
-            str(path),
-        ],
-        capture_output=True,
-        text=True,
-        check=True,
-    )
-    return probe.stdout
-
-
 def test_cli_frame_produces_valid_png(scene_file: Path, tmp_path: Path) -> None:
     """`frame` writes a PNG of the requested resolution at the requested timestamp."""
     out = tmp_path / "cli.png"
@@ -88,7 +66,7 @@ def test_cli_frame_produces_valid_png(scene_file: Path, tmp_path: Path) -> None:
     assert out.read_bytes()[:8] == b"\x89PNG\r\n\x1a\n"
 
 
-@pytest.mark.skipif(shutil.which("ffprobe") is None, reason="ffprobe not on PATH")
+@requires_ffprobe
 def test_cli_render_produces_valid_mp4(scene_file: Path, tmp_path: Path) -> None:
     out = tmp_path / "cli.mp4"
     runner = CliRunner()
@@ -100,17 +78,17 @@ def test_cli_render_produces_valid_mp4(scene_file: Path, tmp_path: Path) -> None
     assert result.exit_code == 0, result.output
     assert out.exists()
 
-    probe = _ffprobe(out)
-    assert "width=480" in probe, probe
-    assert "height=270" in probe, probe
-    assert "codec_name=h264" in probe, probe
-    assert "pix_fmt=yuv420p" in probe, probe
-    assert "avg_frame_rate=15/1" in probe, probe
+    info = ffprobe_stream(out)
+    assert info["width"] == "480"
+    assert info["height"] == "270"
+    assert info["codec_name"] == "h264"
+    assert info["pix_fmt"] == "yuv420p"
+    assert info["avg_frame_rate"] == "15/1"
     # Scene plays a 0.4s animation; 15fps × 0.4s = 6 frames.
-    assert "nb_read_frames=6" in probe, probe
+    assert info["nb_read_frames"] == "6"
 
 
-@pytest.mark.skipif(shutil.which("ffprobe") is None, reason="ffprobe not on PATH")
+@requires_ffprobe
 def test_cli_duration_override_shortens_output(scene_file: Path, tmp_path: Path) -> None:
     out = tmp_path / "shortened.mp4"
     runner = CliRunner()
@@ -128,12 +106,11 @@ def test_cli_duration_override_shortens_output(scene_file: Path, tmp_path: Path)
         ],
     )
     assert result.exit_code == 0, result.output
-    probe = _ffprobe(out)
     # --duration overrides the scene's natural 0.4s → 3 frames at 15fps.
-    assert "nb_read_frames=3" in probe, probe
+    assert ffprobe_stream(out)["nb_read_frames"] == "3"
 
 
-@pytest.mark.skipif(shutil.which("ffprobe") is None, reason="ffprobe not on PATH")
+@requires_ffprobe
 def test_python_dash_m_invocation(scene_file: Path, tmp_path: Path) -> None:
     out = tmp_path / "dashm.mp4"
     subprocess.run(
@@ -152,8 +129,7 @@ def test_python_dash_m_invocation(scene_file: Path, tmp_path: Path) -> None:
         capture_output=True,
     )
     assert out.exists()
-    probe = _ffprobe(out)
-    assert "nb_read_frames=6" in probe, probe
+    assert ffprobe_stream(out)["nb_read_frames"] == "6"
 
 
 def test_cli_rejects_nonpositive_duration(scene_file: Path, tmp_path: Path) -> None:
