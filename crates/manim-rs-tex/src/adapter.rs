@@ -34,7 +34,7 @@ use ratex_types::{Color, DisplayItem, DisplayList, PathCommand};
 /// variant's `scale` (Step 3) scales further. If a future slice needs a
 /// different default (e.g. to match `Text`'s implicit scale), change this
 /// in one place.
-pub(crate) const WORLD_UNITS_PER_EM: f64 = 1.0;
+const WORLD_UNITS_PER_EM: f64 = 1.0;
 
 /// Convert a RaTeX `DisplayList` into a flat list of filled paths in
 /// Manimax world coordinates (y-up, em-scaled).
@@ -55,7 +55,7 @@ pub fn display_list_to_bezpath(list: &DisplayList) -> Vec<(BezPath, Color)> {
 
     let mut out = Vec::with_capacity(list.items.len());
     for item in &list.items {
-        let pair: Option<(BezPath, Color)> = match item {
+        match item {
             DisplayItem::GlyphPath {
                 x,
                 y,
@@ -64,8 +64,13 @@ pub fn display_list_to_bezpath(list: &DisplayList) -> Vec<(BezPath, Color)> {
                 char_code,
                 color,
                 commands: _,
-            } => glyph_path(*x, *y, *scale, font, *char_code, baseline_shift, &mut ctx)
-                .map(|p| (p, *color)),
+            } => {
+                if let Some(p) =
+                    glyph_path(*x, *y, *scale, font, *char_code, baseline_shift, &mut ctx)
+                {
+                    out.push((p, *color));
+                }
+            }
             DisplayItem::Line {
                 x,
                 y,
@@ -77,10 +82,10 @@ pub fn display_list_to_bezpath(list: &DisplayList) -> Vec<(BezPath, Color)> {
                 // Slice E doesn't render dashed lines yet (no \hdashline in
                 // the corpus). When it does, this is where the dash pattern
                 // would be applied. Solid for now.
-                Some((
+                out.push((
                     rect_path(*x, *y, *width, *thickness, baseline_shift),
                     *color,
-                ))
+                ));
             }
             DisplayItem::Rect {
                 x,
@@ -88,7 +93,7 @@ pub fn display_list_to_bezpath(list: &DisplayList) -> Vec<(BezPath, Color)> {
                 width,
                 height,
                 color,
-            } => Some((rect_path(*x, *y, *width, *height, baseline_shift), *color)),
+            } => out.push((rect_path(*x, *y, *width, *height, baseline_shift), *color)),
             DisplayItem::Path {
                 x,
                 y,
@@ -102,11 +107,8 @@ pub fn display_list_to_bezpath(list: &DisplayList) -> Vec<(BezPath, Color)> {
                 // which RaTeX in practice never emits in the supported
                 // corpus. Honoring `fill=false` is deferred until a
                 // corpus expression actually needs it.
-                Some((path_from_commands(commands, *x, *y, baseline_shift), *color))
+                out.push((path_from_commands(commands, *x, *y, baseline_shift), *color));
             }
-        };
-        if let Some(pair) = pair {
-            out.push(pair);
         }
     }
     out
