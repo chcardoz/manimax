@@ -2,13 +2,15 @@
 //! geometry-size guard. The runtime calls [`tessellate_object`] and
 //! [`build_mvp`] for each `ObjectState` before submitting a render pass.
 
+use std::borrow::Cow;
+
 use glam::Mat4;
 use lyon::tessellation::VertexBuffers;
 use manim_rs_eval::ObjectState;
 use manim_rs_ir::{Object, RgbaSrgb, StrokeWidth};
 
 use crate::tessellator::{
-    FillMesh, StrokeVertex, expand_stroke, polyline_to_segments, sample_bezpath,
+    FillMesh, FillTessellator, StrokeVertex, expand_stroke, polyline_to_segments, sample_bezpath,
     tessellate_bezpath_fill, tessellate_polyline_fill,
 };
 use crate::{INDEX_BUFFER_SIZE, RuntimeError};
@@ -29,7 +31,10 @@ impl ObjectDraw {
 /// Tessellate the object's geometry and resolve its paint colors. Returns
 /// an empty `ObjectDraw` (both sides `None`) if no paint produces drawable
 /// indices — the caller skips empty draws.
-pub(crate) fn tessellate_object(state: &ObjectState) -> ObjectDraw {
+pub(crate) fn tessellate_object(
+    fill_tess: &mut FillTessellator,
+    state: &ObjectState,
+) -> ObjectDraw {
     let (fill_raw, stroke_segments, stroke_info) = match &*state.object {
         Object::Polyline {
             points,
@@ -37,8 +42,12 @@ pub(crate) fn tessellate_object(state: &ObjectState) -> ObjectDraw {
             stroke,
             fill,
         } => (
-            fill.as_ref()
-                .map(|f| (tessellate_polyline_fill(points, *closed), f.color)),
+            fill.as_ref().map(|f| {
+                (
+                    tessellate_polyline_fill(fill_tess, points, *closed),
+                    f.color,
+                )
+            }),
             stroke
                 .as_ref()
                 .map(|_| polyline_to_segments(points, *closed)),
@@ -50,23 +59,19 @@ pub(crate) fn tessellate_object(state: &ObjectState) -> ObjectDraw {
             fill,
         } => (
             fill.as_ref()
-                .map(|f| (tessellate_bezpath_fill(verbs), f.color)),
+                .map(|f| (tessellate_bezpath_fill(fill_tess, verbs), f.color)),
             stroke.as_ref().map(|_| sample_bezpath(verbs)),
             stroke.as_ref(),
         ),
-        // Slice E Step 4: the evaluator fans `Object::Tex` into N
-        // `Object::BezPath` `ObjectState`s before this function runs, so
-        // a Tex node here means a code path skipped fan-out — a bug, not
-        // a missing feature. Panic loudly so it surfaces in tests rather
-        // than rendering a silent blank frame.
-        Object::Tex { .. } => {
-            unreachable!("Object::Tex must be expanded by Evaluator::eval_at before tessellation")
-        }
-        // Slice E Step 7 mirror of the Tex contract: the evaluator fans
-        // `Object::Text` into glyph `Object::BezPath`s during eval. The
-        // raster pipeline must never see a raw `Text` node.
-        Object::Text { .. } => {
-            unreachable!("Object::Text must be expanded by Evaluator::eval_at before tessellation")
+        // The evaluator fans `Object::Tex` and `Object::Text` into glyph
+        // `Object::BezPath` states before this function runs (Slice E
+        // Steps 4 & 7). A raw Tex/Text node here means fan-out was
+        // skipped — a bug, not a missing feature. Panic loudly so it
+        // surfaces in tests rather than rendering a silent blank frame.
+        Object::Tex { .. } | Object::Text { .. } => {
+            unreachable!(
+                "Object::Tex/Text must be expanded by Evaluator::eval_at before tessellation"
+            )
         }
     };
 
@@ -96,22 +101,23 @@ pub(crate) fn tessellate_object(state: &ObjectState) -> ObjectDraw {
 }
 
 /// Produce the widths slice `expand_stroke` expects. Scalar → length 1;
-/// per-vertex matching `segments+1` → pass-through; closed-polyline
+/// per-vertex matching `segments+1` → pass-through (borrowed); closed-polyline
 /// off-by-one (N points, N+1 endpoints after the closing edge) → pad by
 /// re-using `widths[0]`; any other mismatch falls back to the first width,
 /// so an IR-level invariant breach degrades to uniform width rather than
 /// panicking.
-pub(crate) fn resolve_stroke_widths(width: &StrokeWidth, segment_count: usize) -> Vec<f32> {
+pub(crate) fn resolve_stroke_widths(width: &StrokeWidth, segment_count: usize) -> Cow<'_, [f32]> {
     let expected = segment_count + 1;
     match width {
-        StrokeWidth::Scalar(v) => vec![*v],
-        StrokeWidth::PerVertex(v) if v.len() == expected => v.clone(),
+        StrokeWidth::Scalar(v) => Cow::Owned(vec![*v]),
+        StrokeWidth::PerVertex(v) if v.len() == expected => Cow::Borrowed(v),
         StrokeWidth::PerVertex(v) if v.len() + 1 == expected && !v.is_empty() => {
-            let mut w = v.clone();
+            let mut w = Vec::with_capacity(expected);
+            w.extend_from_slice(v);
             w.push(v[0]);
-            w
+            Cow::Owned(w)
         }
-        StrokeWidth::PerVertex(v) => vec![v.first().copied().unwrap_or(0.0)],
+        StrokeWidth::PerVertex(v) => Cow::Owned(vec![v.first().copied().unwrap_or(0.0)]),
     }
 }
 

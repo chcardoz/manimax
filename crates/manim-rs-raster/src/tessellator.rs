@@ -7,12 +7,14 @@ use bytemuck::{Pod, Zeroable};
 use lyon::math::point;
 use lyon::path::Path;
 use lyon::tessellation::{
-    BuffersBuilder, FillOptions, FillRule, FillTessellator, FillVertex as LyonFillVertex,
-    FillVertexConstructor, VertexBuffers,
+    BuffersBuilder, FillOptions, FillRule, FillVertex as LyonFillVertex, FillVertexConstructor,
+    VertexBuffers,
 };
 use manim_rs_ir::{JointKind, PathVerb, Vec3};
 
 use crate::pipelines::path_fill::FillVertex;
+
+pub(crate) use lyon::tessellation::FillTessellator;
 
 /// Position-only mesh produced by the fill tessellator.
 pub struct FillMesh {
@@ -466,7 +468,11 @@ pub fn polyline_to_segments(points: &[Vec3], closed: bool) -> Vec<QuadraticSegme
 
 /// Fill the interior of a closed polyline. Returns an empty mesh for open
 /// polylines — fill is meaningless without closure.
-pub fn tessellate_polyline_fill(points: &[Vec3], closed: bool) -> FillMesh {
+pub(crate) fn tessellate_polyline_fill(
+    tess: &mut FillTessellator,
+    points: &[Vec3],
+    closed: bool,
+) -> FillMesh {
     if !closed || points.len() < 3 {
         return FillMesh {
             vertices: Vec::new(),
@@ -474,11 +480,11 @@ pub fn tessellate_polyline_fill(points: &[Vec3], closed: bool) -> FillMesh {
         };
     }
     let path = polyline_to_path(points, true);
-    tessellate_fill_path(&path)
+    tessellate_fill_path(tess, &path)
 }
 
 /// Fill a `BezPath` interior. Manimgl uses non-zero fill; we match that.
-pub fn tessellate_bezpath_fill(verbs: &[PathVerb]) -> FillMesh {
+pub(crate) fn tessellate_bezpath_fill(tess: &mut FillTessellator, verbs: &[PathVerb]) -> FillMesh {
     if verbs.is_empty() {
         return FillMesh {
             vertices: Vec::new(),
@@ -486,7 +492,7 @@ pub fn tessellate_bezpath_fill(verbs: &[PathVerb]) -> FillMesh {
         };
     }
     let path = verbs_to_path(verbs);
-    tessellate_fill_path(&path)
+    tessellate_fill_path(tess, &path)
 }
 
 /// Curve-flattening tolerance for fill tessellation, in world units. lyon's
@@ -498,10 +504,9 @@ pub fn tessellate_bezpath_fill(verbs: &[PathVerb]) -> FillMesh {
 /// outlines. Polylines pay nothing for this since they're already linear.
 const FILL_TOLERANCE: f32 = 0.001;
 
-fn tessellate_fill_path(path: &Path) -> FillMesh {
+fn tessellate_fill_path(tess: &mut FillTessellator, path: &Path) -> FillMesh {
     let mut buffers: VertexBuffers<FillVertex, u32> = VertexBuffers::new();
     let opts = FillOptions::tolerance(FILL_TOLERANCE).with_fill_rule(FillRule::NonZero);
-    let mut tess = FillTessellator::new();
     tess.tessellate_path(
         path,
         &opts,

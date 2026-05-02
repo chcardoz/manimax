@@ -43,6 +43,8 @@ mod render_object;
 pub use camera::Camera;
 pub use tessellator::{QuadraticSegment, StrokeVertex, expand_stroke, sample_bezpath};
 
+use std::cell::RefCell;
+
 use bytemuck::cast_slice;
 use manim_rs_eval::SceneState;
 
@@ -54,6 +56,7 @@ use crate::pipelines::path_stroke::{
 use crate::render_object::{
     ObjectDraw, build_mvp, check_geometry_size, clear_load, tessellate_object,
 };
+use crate::tessellator::FillTessellator;
 
 /// Fragment-shader AA fade width in pixels. Matches manimgl's
 /// `ANTI_ALIAS_WIDTH = 1.5`.
@@ -64,7 +67,7 @@ const COLOR_FORMAT: wgpu::TextureFormat = wgpu::TextureFormat::Rgba8UnormSrgb;
 
 /// MSAA sample count. 4× is universally supported across wgpu backends and
 /// gives clean sub-pixel coverage for the thin strokes Manimax renders.
-pub const MSAA_SAMPLE_COUNT: u32 = 4;
+pub(crate) const MSAA_SAMPLE_COUNT: u32 = 4;
 
 /// Per-object geometry caps. A single object's tessellated mesh must fit
 /// within both of these or `RuntimeError::GeometryOverflow` fires.
@@ -77,11 +80,6 @@ const FILL_VERTEX_BUFFER_SIZE: u64 =
     MAX_VERTICES_PER_OBJECT * std::mem::size_of::<pipelines::path_fill::FillVertex>() as u64;
 pub(crate) const INDEX_BUFFER_SIZE: u64 =
     MAX_INDICES_PER_OBJECT * std::mem::size_of::<u32>() as u64;
-
-fn align_up(v: u32, align: u32) -> u32 {
-    let r = v % align;
-    if r == 0 { v } else { v + align - r }
-}
 
 /// Anything wgpu init or per-frame rendering can fail with.
 #[derive(Debug, thiserror::Error)]
@@ -117,6 +115,9 @@ pub struct Runtime {
 
     stroke: PipeBundle,
     fill: PipeBundle,
+
+    // Reused across frames to avoid lyon's ~per-call internal scratch alloc.
+    fill_tess: RefCell<FillTessellator>,
 }
 
 impl Runtime {
@@ -185,7 +186,8 @@ impl Runtime {
         let resolve_view = resolve_target.create_view(&wgpu::TextureViewDescriptor::default());
 
         let unpadded_bytes_per_row = width * 4;
-        let padded_bytes_per_row = align_up(unpadded_bytes_per_row, COPY_BYTES_PER_ROW_ALIGNMENT);
+        let padded_bytes_per_row =
+            unpadded_bytes_per_row.next_multiple_of(COPY_BYTES_PER_ROW_ALIGNMENT);
         let readback_size = u64::from(padded_bytes_per_row) * u64::from(height);
         let readback = device.create_buffer(&wgpu::BufferDescriptor {
             label: Some("manim-rs readback buffer"),
@@ -226,6 +228,7 @@ impl Runtime {
             padded_bytes_per_row,
             stroke,
             fill,
+            fill_tess: RefCell::new(FillTessellator::new()),
         })
     }
 
@@ -283,8 +286,9 @@ impl Runtime {
 
         // The first drawn object clears the background; subsequent ones load.
         let mut needs_clear = true;
+        let mut fill_tess = self.fill_tess.borrow_mut();
         for obj in &state.objects {
-            let draw = tessellate_object(obj);
+            let draw = tessellate_object(&mut fill_tess, obj);
             if draw.is_empty() {
                 continue;
             }
@@ -469,19 +473,5 @@ impl Runtime {
         };
         self.readback.unmap();
         Ok(out)
-    }
-}
-
-#[cfg(test)]
-mod tests {
-    use super::align_up;
-
-    #[test]
-    fn align_up_rounds_correctly() {
-        assert_eq!(align_up(0, 256), 0);
-        assert_eq!(align_up(1, 256), 256);
-        assert_eq!(align_up(256, 256), 256);
-        assert_eq!(align_up(1920, 256), 2048);
-        assert_eq!(align_up(2048, 256), 2048);
     }
 }
