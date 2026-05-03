@@ -208,7 +208,7 @@ Working calibration: zigzag @ n=3000 → 6002 tessellated vertices > `MAX_VERTIC
 
 If you register exactly one `@app.command()`, typer drops the subcommand name — `python -m pkg render ARG` becomes `python -m pkg ARG`, breaking any documentation that shows the subcommand. **Add a no-op `@app.callback()`** to force typer to keep subcommands.
 
-Fix lives in: `python/manim_rs/cli.py` — the `_root` callback. Delete it only once a second subcommand exists.
+Fix lives in: `python/manim_rs/cli/__init__.py` — the `_root` callback. Delete it only once a second subcommand exists.
 
 ---
 

@@ -13,19 +13,19 @@
 //! and fixed (~20 files, ~2 MB total); leaking is the right tradeoff.
 
 use std::collections::HashMap;
-use std::sync::{OnceLock, RwLock};
+use std::sync::{Mutex, OnceLock};
 
 const INTER_REGULAR: &[u8] = include_bytes!("../fonts/Inter-Regular.ttf");
 
 /// Default text font (Inter Regular, OFL-1.1). Used when a `Text` mobject
 /// doesn't supply an explicit font path.
-pub fn default_text_font() -> &'static [u8] {
+pub(crate) fn default_text_font() -> &'static [u8] {
     INTER_REGULAR
 }
 
-fn katex_cache() -> &'static RwLock<HashMap<String, &'static [u8]>> {
-    static CACHE: OnceLock<RwLock<HashMap<String, &'static [u8]>>> = OnceLock::new();
-    CACHE.get_or_init(|| RwLock::new(HashMap::new()))
+fn katex_cache() -> &'static Mutex<HashMap<String, &'static [u8]>> {
+    static CACHE: OnceLock<Mutex<HashMap<String, &'static [u8]>>> = OnceLock::new();
+    CACHE.get_or_init(|| Mutex::new(HashMap::new()))
 }
 
 /// Resolve a RaTeX `DisplayItem::GlyphPath::font` id (e.g. `"Main-Regular"`,
@@ -38,25 +38,12 @@ pub fn katex_font(font_id: &str) -> Option<&'static [u8]> {
     // Lock poisoning here means a previous caller panicked inside
     // Box::leak / into_owned — a real bug, not "font not found." Don't
     // mask it as None; let `.expect` crash this caller too.
-    if let Some(bytes) = katex_cache()
-        .read()
-        .expect("katex font cache lock poisoned")
-        .get(font_id)
-        .copied()
-    {
-        return Some(bytes);
-    }
-
-    // Take the write lock *before* leaking so concurrent cold misses
-    // can't both leak duplicate font allocations. Re-check under the
-    // lock first; if a winner already inserted, return their entry.
     let mut cache = katex_cache()
-        .write()
+        .lock()
         .expect("katex font cache lock poisoned");
-    if let Some(bytes) = cache.get(font_id).copied() {
+    if let Some(&bytes) = cache.get(font_id) {
         return Some(bytes);
     }
-
     let filename = format!("KaTeX_{font_id}.ttf");
     let bytes_cow = ratex_katex_fonts::ttf_bytes(&filename)?;
     let leaked: &'static [u8] = Box::leak(bytes_cow.into_owned().into_boxed_slice());

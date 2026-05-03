@@ -40,14 +40,14 @@ pub const UNIFORM_SIZE: u64 = std::mem::size_of::<StrokeUniforms>() as u64;
 
 /// Compiled stroke pipeline plus the bind-group layout the runtime needs
 /// to build a uniform binding.
-pub struct StrokePipeline {
-    pub pipeline: wgpu::RenderPipeline,
-    pub bind_group_layout: wgpu::BindGroupLayout,
+pub(crate) struct StrokePipeline {
+    pub(crate) pipeline: wgpu::RenderPipeline,
+    pub(crate) bind_group_layout: wgpu::BindGroupLayout,
 }
 
 impl StrokePipeline {
     /// Compile the stroke WGSL shader and create the wgpu pipeline.
-    pub fn new(device: &wgpu::Device, color_format: wgpu::TextureFormat) -> Self {
+    pub(crate) fn new(device: &wgpu::Device, color_format: wgpu::TextureFormat) -> Self {
         let shader = device.create_shader_module(wgpu::ShaderModuleDescriptor {
             label: Some("path_stroke.wgsl"),
             source: wgpu::ShaderSource::Wgsl(include_str!("../shaders/path_stroke.wgsl").into()),
@@ -73,38 +73,17 @@ impl StrokePipeline {
             immediate_size: 0,
         });
 
-        // StrokeVertex layout: position(8) + uv(8) + stroke_width(4) +
-        // joint_angle(4) + color(16) = 40 bytes.
+        const STROKE_ATTRS: [wgpu::VertexAttribute; 5] = wgpu::vertex_attr_array![
+            0 => Float32x2,
+            1 => Float32x2,
+            2 => Float32,
+            3 => Float32,
+            4 => Float32x4,
+        ];
         let vertex_buffer_layout = wgpu::VertexBufferLayout {
             array_stride: std::mem::size_of::<StrokeVertex>() as u64,
             step_mode: wgpu::VertexStepMode::Vertex,
-            attributes: &[
-                wgpu::VertexAttribute {
-                    format: wgpu::VertexFormat::Float32x2,
-                    offset: 0,
-                    shader_location: 0,
-                },
-                wgpu::VertexAttribute {
-                    format: wgpu::VertexFormat::Float32x2,
-                    offset: 8,
-                    shader_location: 1,
-                },
-                wgpu::VertexAttribute {
-                    format: wgpu::VertexFormat::Float32,
-                    offset: 16,
-                    shader_location: 2,
-                },
-                wgpu::VertexAttribute {
-                    format: wgpu::VertexFormat::Float32,
-                    offset: 20,
-                    shader_location: 3,
-                },
-                wgpu::VertexAttribute {
-                    format: wgpu::VertexFormat::Float32x4,
-                    offset: 24,
-                    shader_location: 4,
-                },
-            ],
+            attributes: &STROKE_ATTRS,
         };
 
         let pipeline = device.create_render_pipeline(&wgpu::RenderPipelineDescriptor {

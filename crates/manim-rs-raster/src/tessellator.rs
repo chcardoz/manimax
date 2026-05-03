@@ -7,12 +7,14 @@ use bytemuck::{Pod, Zeroable};
 use lyon::math::point;
 use lyon::path::Path;
 use lyon::tessellation::{
-    BuffersBuilder, FillOptions, FillRule, FillTessellator, FillVertex as LyonFillVertex,
-    FillVertexConstructor, VertexBuffers,
+    BuffersBuilder, FillOptions, FillRule, FillVertex as LyonFillVertex, FillVertexConstructor,
+    VertexBuffers,
 };
 use manim_rs_ir::{JointKind, PathVerb, Vec3};
 
 use crate::pipelines::path_fill::FillVertex;
+
+pub(crate) use lyon::tessellation::FillTessellator;
 
 /// Position-only mesh produced by the fill tessellator.
 pub struct FillMesh {
@@ -178,7 +180,14 @@ pub fn expand_stroke(
     };
 
     // Per-segment "end" data used to bridge joints with the next segment.
-    let mut prev: Option<([f32; 2], [f32; 2], f32, u32, u32)> = None;
+    struct SegmentEnd {
+        position: [f32; 2],
+        tangent: [f32; 2],
+        width: f32,
+        left_idx: u32,
+        right_idx: u32,
+    }
+    let mut prev: Option<SegmentEnd> = None;
 
     for (i, seg) in segments.iter().enumerate() {
         let n = step_count(seg);
@@ -234,25 +243,25 @@ pub fn expand_stroke(
         let (end_l, end_r) = last_in_seg.unwrap();
 
         // Joint between previous segment and this one.
-        if let Some((prev_p, prev_t, prev_w, prev_l, prev_r)) = prev {
-            let gap_sq = (prev_p[0] - seg.p0[0]).powi(2) + (prev_p[1] - seg.p0[1]).powi(2);
+        if let Some(p) = prev {
+            let gap_sq = (p.position[0] - seg.p0[0]).powi(2) + (p.position[1] - seg.p0[1]).powi(2);
             if gap_sq < 1e-8 {
-                let cos_theta = prev_t[0] * start_tangent[0] + prev_t[1] * start_tangent[1];
-                let cross = prev_t[0] * start_tangent[1] - prev_t[1] * start_tangent[0];
+                let cos_theta = p.tangent[0] * start_tangent[0] + p.tangent[1] * start_tangent[1];
+                let cross = p.tangent[0] * start_tangent[1] - p.tangent[1] * start_tangent[0];
                 let use_miter = match joint {
                     JointKind::Miter => true,
                     JointKind::Bevel => false,
                     JointKind::Auto => cos_theta > MITER_COS_ANGLE_THRESHOLD,
                 };
                 if use_miter {
-                    let pn = perp(prev_t);
+                    let pn = perp(p.tangent);
                     let sn = perp(start_tangent);
                     let denom = 1.0 + pn[0] * sn[0] + pn[1] * sn[1];
                     let denom = if denom.abs() < 1e-6 { 1e-6 } else { denom };
-                    let hw = 0.5 * (prev_w + w_start) * 0.5;
+                    let hw = 0.5 * (p.width + w_start) * 0.5;
                     let mx = hw * (pn[0] + sn[0]) / denom;
                     let my = hw * (pn[1] + sn[1]) / denom;
-                    let miter_w = (prev_w + w_start) * 0.5;
+                    let miter_w = (p.width + w_start) * 0.5;
                     let joint_angle = cos_theta.acos() * cross.signum();
                     let ml_idx = buffers.vertices.len() as u32;
                     buffers.vertices.push(StrokeVertex {
@@ -271,8 +280,12 @@ pub fn expand_stroke(
                         color,
                     });
                     // Fill the gap between prev end and current start via the miter quad.
-                    buffers.indices.extend_from_slice(&[prev_l, prev_r, ml_idx]);
-                    buffers.indices.extend_from_slice(&[prev_r, mr_idx, ml_idx]);
+                    buffers
+                        .indices
+                        .extend_from_slice(&[p.left_idx, p.right_idx, ml_idx]);
+                    buffers
+                        .indices
+                        .extend_from_slice(&[p.right_idx, mr_idx, ml_idx]);
                     buffers
                         .indices
                         .extend_from_slice(&[ml_idx, mr_idx, start_l]);
@@ -283,15 +296,21 @@ pub fn expand_stroke(
                     // Bevel: quad directly between the two ribbon ends.
                     buffers
                         .indices
-                        .extend_from_slice(&[prev_l, prev_r, start_l]);
+                        .extend_from_slice(&[p.left_idx, p.right_idx, start_l]);
                     buffers
                         .indices
-                        .extend_from_slice(&[prev_r, start_r, start_l]);
+                        .extend_from_slice(&[p.right_idx, start_r, start_l]);
                 }
             }
         }
 
-        prev = Some((seg.p2, end_tangent, w_end, end_l, end_r));
+        prev = Some(SegmentEnd {
+            position: seg.p2,
+            tangent: end_tangent,
+            width: w_end,
+            left_idx: end_l,
+            right_idx: end_r,
+        });
     }
 
     buffers
@@ -466,7 +485,11 @@ pub fn polyline_to_segments(points: &[Vec3], closed: bool) -> Vec<QuadraticSegme
 
 /// Fill the interior of a closed polyline. Returns an empty mesh for open
 /// polylines — fill is meaningless without closure.
-pub fn tessellate_polyline_fill(points: &[Vec3], closed: bool) -> FillMesh {
+pub(crate) fn tessellate_polyline_fill(
+    tess: &mut FillTessellator,
+    points: &[Vec3],
+    closed: bool,
+) -> FillMesh {
     if !closed || points.len() < 3 {
         return FillMesh {
             vertices: Vec::new(),
@@ -474,11 +497,11 @@ pub fn tessellate_polyline_fill(points: &[Vec3], closed: bool) -> FillMesh {
         };
     }
     let path = polyline_to_path(points, true);
-    tessellate_fill_path(&path)
+    tessellate_fill_path(tess, &path)
 }
 
 /// Fill a `BezPath` interior. Manimgl uses non-zero fill; we match that.
-pub fn tessellate_bezpath_fill(verbs: &[PathVerb]) -> FillMesh {
+pub(crate) fn tessellate_bezpath_fill(tess: &mut FillTessellator, verbs: &[PathVerb]) -> FillMesh {
     if verbs.is_empty() {
         return FillMesh {
             vertices: Vec::new(),
@@ -486,7 +509,7 @@ pub fn tessellate_bezpath_fill(verbs: &[PathVerb]) -> FillMesh {
         };
     }
     let path = verbs_to_path(verbs);
-    tessellate_fill_path(&path)
+    tessellate_fill_path(tess, &path)
 }
 
 /// Curve-flattening tolerance for fill tessellation, in world units. lyon's
@@ -498,10 +521,9 @@ pub fn tessellate_bezpath_fill(verbs: &[PathVerb]) -> FillMesh {
 /// outlines. Polylines pay nothing for this since they're already linear.
 const FILL_TOLERANCE: f32 = 0.001;
 
-fn tessellate_fill_path(path: &Path) -> FillMesh {
+fn tessellate_fill_path(tess: &mut FillTessellator, path: &Path) -> FillMesh {
     let mut buffers: VertexBuffers<FillVertex, u32> = VertexBuffers::new();
     let opts = FillOptions::tolerance(FILL_TOLERANCE).with_fill_rule(FillRule::NonZero);
-    let mut tess = FillTessellator::new();
     tess.tessellate_path(
         path,
         &opts,

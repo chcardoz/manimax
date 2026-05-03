@@ -13,6 +13,7 @@ from typing import Literal, cast, get_args
 import numpy as np
 
 from manim_rs import ir
+from manim_rs.objects._coerce import vec3 as _vec3
 
 PolylineInput = Sequence[tuple[float, float, float]] | np.ndarray
 StrokeWidthInput = float | Sequence[float]
@@ -60,13 +61,13 @@ def _normalize_points(points: PolylineInput) -> tuple[ir.Vec3, ...]:
             raise ValueError(f"Polyline points must have shape (N, 3), got {points.shape}")
         if points.shape[0] < 2:
             raise ValueError(f"Polyline needs at least 2 points, got {points.shape[0]}")
-        return tuple((float(x), float(y), float(z)) for x, y, z in points)
+        return tuple(_vec3((x, y, z)) for x, y, z in points)
 
     out: list[ir.Vec3] = []
     for i, p in enumerate(points):
         if len(p) != 3:
             raise ValueError(f"Polyline point {i} must be a 3-tuple, got {p!r}")
-        out.append((float(p[0]), float(p[1]), float(p[2])))
+        out.append(_vec3(p))
     if len(out) < 2:
         raise ValueError(f"Polyline needs at least 2 points, got {len(out)}")
     return tuple(out)
@@ -118,26 +119,19 @@ class BezPath:
 # Verb-builder convenience: short lowercase constructors so scene authoring
 # reads like lyon/Bezier code — `move_to((0,0,0))`, `quad_to(ctrl, to)`.
 def move_to(to: ir.Vec3) -> ir.MoveToVerb:
-    return ir.MoveToVerb(to=(float(to[0]), float(to[1]), float(to[2])))
+    return ir.MoveToVerb(to=_vec3(to))
 
 
 def line_to(to: ir.Vec3) -> ir.LineToVerb:
-    return ir.LineToVerb(to=(float(to[0]), float(to[1]), float(to[2])))
+    return ir.LineToVerb(to=_vec3(to))
 
 
 def quad_to(ctrl: ir.Vec3, to: ir.Vec3) -> ir.QuadToVerb:
-    return ir.QuadToVerb(
-        ctrl=(float(ctrl[0]), float(ctrl[1]), float(ctrl[2])),
-        to=(float(to[0]), float(to[1]), float(to[2])),
-    )
+    return ir.QuadToVerb(ctrl=_vec3(ctrl), to=_vec3(to))
 
 
 def cubic_to(ctrl1: ir.Vec3, ctrl2: ir.Vec3, to: ir.Vec3) -> ir.CubicToVerb:
-    return ir.CubicToVerb(
-        ctrl1=(float(ctrl1[0]), float(ctrl1[1]), float(ctrl1[2])),
-        ctrl2=(float(ctrl2[0]), float(ctrl2[1]), float(ctrl2[2])),
-        to=(float(to[0]), float(to[1]), float(to[2])),
-    )
+    return ir.CubicToVerb(ctrl1=_vec3(ctrl1), ctrl2=_vec3(ctrl2), to=_vec3(to))
 
 
 def close() -> ir.CloseVerb:

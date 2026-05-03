@@ -11,5 +11,8 @@ mod font;
 mod glyph;
 
 pub use cosmic::{TextAlign, TextWeight, text_to_bezpaths};
-pub use font::{default_text_font, katex_font};
-pub use glyph::{glyph_to_bezpath, glyph_to_bezpath_by_id};
+pub use font::katex_font;
+pub use glyph::glyph_to_bezpath;
+// Re-export `ScaleContext` so callers building many glyphs in a row can
+// hoist one out of their hot loop and pass it into `glyph_to_bezpath`.
+pub use swash::scale::ScaleContext;

@@ -8,9 +8,11 @@ the Rust evaluator.
 
 from __future__ import annotations
 
-from typing import Protocol
+from typing import Any, ClassVar, Protocol
 
 from manim_rs import ir
+from manim_rs.objects._coerce import rgba as _rgba
+from manim_rs.objects._coerce import vec3 as _vec3
 from manim_rs.objects.geometry import BezPath, Polyline
 
 Target = Polyline | BezPath
@@ -41,15 +43,54 @@ def _default_easing() -> ir.Easing:
     return ir.LinearEasing()
 
 
-def _vec3(v: ir.Vec3) -> ir.Vec3:
-    return (float(v[0]), float(v[1]), float(v[2]))
+class _SegmentAnimation:
+    """Shared shape for single-track, single-segment animations.
+
+    Each subclass declares ``_VERB`` (error-message label), ``_TRACK_CLS``, and
+    ``_SEGMENT_CLS``, and overrides ``_endpoints()`` to return ``(from_, to)``.
+    The boilerplate ``emit()`` then composes the one Track / one Segment IR.
+    """
+
+    _VERB: ClassVar[str]
+    _TRACK_CLS: ClassVar[type[ir.Track]]
+    _SEGMENT_CLS: ClassVar[type[Any]]
+
+    __slots__ = ("obj", "duration", "easing")
+
+    def __init__(
+        self,
+        obj: Target,
+        duration: float,
+        *,
+        easing: ir.Easing | None = None,
+    ) -> None:
+        self.obj = obj
+        self.duration = _check_duration(duration, self._VERB)
+        self.easing: ir.Easing = easing or _default_easing()
+
+    def _endpoints(self) -> tuple[Any, Any]:
+        raise NotImplementedError
+
+    def emit(self, t_start: float) -> list[ir.Track]:
+        oid = _require_id(self.obj, self._VERB)
+        from_, to = self._endpoints()
+        return [
+            self._TRACK_CLS(
+                id=oid,
+                segments=(
+                    self._SEGMENT_CLS(
+                        t0=t_start,
+                        t1=t_start + self.duration,
+                        from_=from_,
+                        to=to,
+                        easing=self.easing,
+                    ),
+                ),
+            )
+        ]
 
 
-def _rgba(c: ir.RgbaSrgb) -> ir.RgbaSrgb:
-    return (float(c[0]), float(c[1]), float(c[2]), float(c[3]))
-
-
-class Translate:
+class Translate(_SegmentAnimation):
     """Translate an object by ``delta`` over ``duration`` seconds.
 
     Emits a single ``PositionSegment`` from ``(0,0,0)`` to ``delta``. The
@@ -58,7 +99,11 @@ class Translate:
     position the object was born at".
     """
 
-    __slots__ = ("obj", "delta", "duration", "easing")
+    _VERB = "Translate"
+    _TRACK_CLS = ir.PositionTrack
+    _SEGMENT_CLS = ir.PositionSegment
+
+    __slots__ = ("delta",)
 
     def __init__(
         self,
@@ -68,33 +113,21 @@ class Translate:
         *,
         easing: ir.Easing | None = None,
     ) -> None:
-        self.obj = obj
+        super().__init__(obj, duration, easing=easing)
         self.delta: ir.Vec3 = _vec3(delta)
-        self.duration = _check_duration(duration, "Translate")
-        self.easing: ir.Easing = easing or _default_easing()
 
-    def emit(self, t_start: float) -> list[ir.Track]:
-        oid = _require_id(self.obj, "Translate")
-        return [
-            ir.PositionTrack(
-                id=oid,
-                segments=(
-                    ir.PositionSegment(
-                        t0=t_start,
-                        t1=t_start + self.duration,
-                        from_=(0.0, 0.0, 0.0),
-                        to=self.delta,
-                        easing=self.easing,
-                    ),
-                ),
-            )
-        ]
+    def _endpoints(self) -> tuple[ir.Vec3, ir.Vec3]:
+        return (0.0, 0.0, 0.0), self.delta
 
 
-class Rotate:
+class Rotate(_SegmentAnimation):
     """Rotate by ``angle`` radians over ``duration``."""
 
-    __slots__ = ("obj", "angle", "duration", "easing")
+    _VERB = "Rotate"
+    _TRACK_CLS = ir.RotationTrack
+    _SEGMENT_CLS = ir.RotationSegment
+
+    __slots__ = ("angle",)
 
     def __init__(
         self,
@@ -104,30 +137,14 @@ class Rotate:
         *,
         easing: ir.Easing | None = None,
     ) -> None:
-        self.obj = obj
+        super().__init__(obj, duration, easing=easing)
         self.angle = float(angle)
-        self.duration = _check_duration(duration, "Rotate")
-        self.easing: ir.Easing = easing or _default_easing()
 
-    def emit(self, t_start: float) -> list[ir.Track]:
-        oid = _require_id(self.obj, "Rotate")
-        return [
-            ir.RotationTrack(
-                id=oid,
-                segments=(
-                    ir.RotationSegment(
-                        t0=t_start,
-                        t1=t_start + self.duration,
-                        from_=0.0,
-                        to=self.angle,
-                        easing=self.easing,
-                    ),
-                ),
-            )
-        ]
+    def _endpoints(self) -> tuple[float, float]:
+        return 0.0, self.angle
 
 
-class ScaleBy:
+class ScaleBy(_SegmentAnimation):
     """Scale the object by ``factor`` over ``duration``.
 
     Multiplicative and composes with other scale animations: the evaluator
@@ -137,7 +154,11 @@ class ScaleBy:
     separate primitive.
     """
 
-    __slots__ = ("obj", "factor", "duration", "easing")
+    _VERB = "ScaleBy"
+    _TRACK_CLS = ir.ScaleTrack
+    _SEGMENT_CLS = ir.ScaleSegment
+
+    __slots__ = ("factor",)
 
     def __init__(
         self,
@@ -147,99 +168,41 @@ class ScaleBy:
         *,
         easing: ir.Easing | None = None,
     ) -> None:
-        self.obj = obj
+        super().__init__(obj, duration, easing=easing)
         self.factor = float(factor)
-        self.duration = _check_duration(duration, "ScaleBy")
-        self.easing: ir.Easing = easing or _default_easing()
 
-    def emit(self, t_start: float) -> list[ir.Track]:
-        oid = _require_id(self.obj, "ScaleBy")
-        return [
-            ir.ScaleTrack(
-                id=oid,
-                segments=(
-                    ir.ScaleSegment(
-                        t0=t_start,
-                        t1=t_start + self.duration,
-                        from_=1.0,
-                        to=self.factor,
-                        easing=self.easing,
-                    ),
-                ),
-            )
-        ]
+    def _endpoints(self) -> tuple[float, float]:
+        return 1.0, self.factor
 
 
-class FadeIn:
+class FadeIn(_SegmentAnimation):
     """Opacity 0 → 1 over ``duration``."""
 
-    __slots__ = ("obj", "duration", "easing")
+    _VERB = "FadeIn"
+    _TRACK_CLS = ir.OpacityTrack
+    _SEGMENT_CLS = ir.OpacitySegment
 
-    def __init__(
-        self,
-        obj: Target,
-        duration: float,
-        *,
-        easing: ir.Easing | None = None,
-    ) -> None:
-        self.obj = obj
-        self.duration = _check_duration(duration, "FadeIn")
-        self.easing: ir.Easing = easing or _default_easing()
+    __slots__ = ()
 
-    def emit(self, t_start: float) -> list[ir.Track]:
-        oid = _require_id(self.obj, "FadeIn")
-        return [
-            ir.OpacityTrack(
-                id=oid,
-                segments=(
-                    ir.OpacitySegment(
-                        t0=t_start,
-                        t1=t_start + self.duration,
-                        from_=0.0,
-                        to=1.0,
-                        easing=self.easing,
-                    ),
-                ),
-            )
-        ]
+    def _endpoints(self) -> tuple[float, float]:
+        return 0.0, 1.0
 
 
-class FadeOut:
+class FadeOut(_SegmentAnimation):
     """Opacity 1 → 0 over ``duration``."""
 
-    __slots__ = ("obj", "duration", "easing")
+    _VERB = "FadeOut"
+    _TRACK_CLS = ir.OpacityTrack
+    _SEGMENT_CLS = ir.OpacitySegment
 
-    def __init__(
-        self,
-        obj: Target,
-        duration: float,
-        *,
-        easing: ir.Easing | None = None,
-    ) -> None:
-        self.obj = obj
-        self.duration = _check_duration(duration, "FadeOut")
-        self.easing: ir.Easing = easing or _default_easing()
+    __slots__ = ()
 
-    def emit(self, t_start: float) -> list[ir.Track]:
-        oid = _require_id(self.obj, "FadeOut")
-        return [
-            ir.OpacityTrack(
-                id=oid,
-                segments=(
-                    ir.OpacitySegment(
-                        t0=t_start,
-                        t1=t_start + self.duration,
-                        from_=1.0,
-                        to=0.0,
-                        easing=self.easing,
-                    ),
-                ),
-            )
-        ]
+    def _endpoints(self) -> tuple[float, float]:
+        return 1.0, 0.0
 
 
-class Colorize:
-    """Override color to ``color`` over ``duration``, starting from ``from_``.
+class Colorize(_SegmentAnimation):
+    """Override color to ``to_color`` over ``duration``, starting from ``from_color``.
 
     The evaluator's color-track semantics are "last-write override" — the
     active color-track sample replaces the authored object color for the
@@ -248,7 +211,11 @@ class Colorize:
     the authored color.
     """
 
-    __slots__ = ("obj", "from_color", "to_color", "duration", "easing")
+    _VERB = "Colorize"
+    _TRACK_CLS = ir.ColorTrack
+    _SEGMENT_CLS = ir.ColorSegment
+
+    __slots__ = ("from_color", "to_color")
 
     def __init__(
         self,
@@ -259,25 +226,9 @@ class Colorize:
         *,
         easing: ir.Easing | None = None,
     ) -> None:
-        self.obj = obj
+        super().__init__(obj, duration, easing=easing)
         self.from_color: ir.RgbaSrgb = _rgba(from_color)
         self.to_color: ir.RgbaSrgb = _rgba(to_color)
-        self.duration = _check_duration(duration, "Colorize")
-        self.easing: ir.Easing = easing or _default_easing()
 
-    def emit(self, t_start: float) -> list[ir.Track]:
-        oid = _require_id(self.obj, "Colorize")
-        return [
-            ir.ColorTrack(
-                id=oid,
-                segments=(
-                    ir.ColorSegment(
-                        t0=t_start,
-                        t1=t_start + self.duration,
-                        from_=self.from_color,
-                        to=self.to_color,
-                        easing=self.easing,
-                    ),
-                ),
-            )
-        ]
+    def _endpoints(self) -> tuple[ir.RgbaSrgb, ir.RgbaSrgb]:
+        return self.from_color, self.to_color

@@ -17,28 +17,24 @@ use crate::tex::compile_tex;
 use crate::text::compile_text;
 use crate::tracks::{Segment, evaluate_track, segment_alpha};
 
-/// Compiled Tex children indexed by `blake3(canonical_serde(Object::Tex))`.
-/// Each entry is the Step 3 `compile_tex` output with its `Object`s pre-Arc'd
-/// so per-frame fan-out only does ref-count bumps.
-type TexCache = Arc<Mutex<HashMap<blake3::Hash, Arc<Vec<Arc<Object>>>>>>;
-
-/// Compiled Text children indexed by `blake3((src, font, weight, size, color, align))`.
-/// Same pre-Arc'd shape as `TexCache` so fan-out is a ref-count bump.
-type TextCache = Arc<Mutex<HashMap<blake3::Hash, Arc<Vec<Arc<Object>>>>>>;
+/// Pre-Arc'd compiled glyph children indexed by content hash. Each entry is
+/// the source-`compile_*` output with its `Object`s wrapped in `Arc` so the
+/// per-frame fan-out only does ref-count bumps. Used for both Tex and Text.
+type CompileCache = Arc<Mutex<HashMap<blake3::Hash, Arc<Vec<Arc<Object>>>>>>;
 
 /// Runtime-friendly evaluator state compiled once from an authored `Scene`.
-#[derive(Debug, Clone, Default)]
+#[derive(Debug, Clone)]
 pub struct Evaluator {
     timeline: Vec<CompiledTimelineOp>,
     tracks: HashMap<ObjectId, TrackBundle>,
     /// Per-Evaluator cache of compiled Tex outputs. Keyed by content hash so
     /// two scenes with the same Tex source share entries; carried across
     /// frames so a Tex that lives for N frames compiles once.
-    tex_cache: TexCache,
-    /// Per-Evaluator cache of compiled Text outputs. Same shape as
-    /// `tex_cache`. Cache key intentionally excludes per-instance transforms
-    /// (Slice E §11 — same lesson as Tex's post-Step-5 cleanup).
-    text_cache: TextCache,
+    tex_cache: CompileCache,
+    /// Per-Evaluator cache of compiled Text outputs. Cache key intentionally
+    /// excludes per-instance transforms — those apply later at the
+    /// `ObjectState` level, not in the cached geometry.
+    text_cache: CompileCache,
 }
 
 #[derive(Debug, Clone)]
@@ -95,57 +91,53 @@ impl Evaluator {
         Self {
             timeline,
             tracks: index_tracks(tracks),
-            tex_cache: TexCache::default(),
-            text_cache: TextCache::default(),
+            tex_cache: CompileCache::default(),
+            text_cache: CompileCache::default(),
         }
+    }
+
+    /// Probe the cache; on miss, run `compile`, Arc-wrap each child, and
+    /// insert. The lock is dropped between probe and compile so two threads
+    /// racing on the same key both compile — the loser's result is dropped
+    /// when re-checking under the second lock. Acceptable until the
+    /// renderer goes parallel; replace with `RwLock` or a smarter scheme then.
+    fn cached_compile<F>(
+        cache: &CompileCache,
+        key: blake3::Hash,
+        compile: F,
+    ) -> Arc<Vec<Arc<Object>>>
+    where
+        F: FnOnce() -> Vec<Object>,
+    {
+        if let Some(hit) = cache.lock().unwrap().get(&key).cloned() {
+            return hit;
+        }
+        let compiled: Vec<Arc<Object>> = compile().into_iter().map(Arc::new).collect();
+        let arc = Arc::new(compiled);
+        Arc::clone(cache.lock().unwrap().entry(key).or_insert(arc))
     }
 
     /// Look up (or compile and insert) the BezPath children for a Tex IR
-    /// node. Returns each child wrapped in `Arc<Object>` so the fan-out at
-    /// `eval_at` can hand them straight to `ObjectState` without cloning
-    /// the underlying verb buffers.
+    /// node. Key excludes `scale` (applied at fan-out) and `macros` (pre-
+    /// expanded by Python). `compile_tex` is expected to succeed because the
+    /// Python constructor pre-validates; direct Rust callers must pass valid
+    /// sources or accept the panic.
     fn compile_tex_cached(&self, src: &str, color: RgbaSrgb) -> Arc<Vec<Arc<Object>>> {
-        // Cache key intentionally excludes `scale` (not baked into
-        // geometry — applied at fan-out) and `macros` (Python pre-expands;
-        // IR ships `{}`). Two Tex calls with same src+color but different
-        // scale share one entry. blake3 over a tiny canonical struct.
-        let key = {
-            let mut hasher = blake3::Hasher::new();
-            hasher.update(src.as_bytes());
-            for c in color {
-                hasher.update(&c.to_le_bytes());
-            }
-            hasher.finalize()
-        };
-
-        if let Some(hit) = self.tex_cache.lock().unwrap().get(&key).cloned() {
-            return hit;
+        let mut hasher = blake3::Hasher::new();
+        hasher.update(src.as_bytes());
+        for c in color {
+            hasher.update(&c.to_le_bytes());
         }
-
-        // `compile_tex` should never fail here: the Python `Tex(...)`
-        // constructor (Slice E Step 5) calls `tex_validate` before IR
-        // emission. Direct Rust callers (e.g. integration tests) are
-        // expected to pass valid sources or accept the panic.
-        let compiled: Vec<Arc<Object>> = compile_tex(src, color)
-            .expect("compile_tex on validated source")
-            .into_iter()
-            .map(Arc::new)
-            .collect();
-        let arc = Arc::new(compiled);
-
-        let mut cache = self.tex_cache.lock().unwrap();
-        // Re-check under the lock so a parallel miss doesn't leak a second
-        // copy into the cache. Two threads can still both run compile_tex
-        // before reaching here; the loser's result is dropped. Acceptable
-        // until the renderer goes parallel.
-        Arc::clone(cache.entry(key).or_insert(arc))
+        let key = hasher.finalize();
+        Self::cached_compile(&self.tex_cache, key, || {
+            compile_tex(src, color).expect("compile_tex on validated source")
+        })
     }
 
     /// Look up (or compile and insert) the BezPath children for a Text IR
-    /// node. Cache key covers every shape-determining input — `src`, `font`,
-    /// `weight`, `size`, `color`, `align` — but **not** per-instance
-    /// transforms (position / rotation / scale tracks), which apply later at
-    /// the `ObjectState` level.
+    /// node. Key covers every shape-determining input but excludes per-instance
+    /// transforms (position / rotation / scale), which apply later at
+    /// `ObjectState`.
     fn compile_text_cached(
         &self,
         src: &str,
@@ -155,49 +147,33 @@ impl Evaluator {
         color: RgbaSrgb,
         align: TextAlign,
     ) -> Arc<Vec<Arc<Object>>> {
-        let key = {
-            let mut hasher = blake3::Hasher::new();
-            hasher.update(src.as_bytes());
-            // Tag font: None vs Some so an empty Some("") stays distinct from None.
-            match font {
-                None => {
-                    hasher.update(&[0u8]);
-                }
-                Some(f) => {
-                    hasher.update(&[1u8]);
-                    hasher.update(f.as_bytes());
-                }
+        let mut hasher = blake3::Hasher::new();
+        hasher.update(src.as_bytes());
+        // Tag font None vs Some so an empty Some("") stays distinct from None.
+        match font {
+            None => hasher.update(&[0u8]),
+            Some(f) => {
+                hasher.update(&[1u8]);
+                hasher.update(f.as_bytes())
             }
-            hasher.update(&[match weight {
-                TextWeight::Regular => 0,
-                TextWeight::Bold => 1,
-            }]);
-            hasher.update(&size.to_le_bytes());
-            for c in color {
-                hasher.update(&c.to_le_bytes());
-            }
-            hasher.update(&[match align {
-                TextAlign::Left => 0,
-                TextAlign::Center => 1,
-                TextAlign::Right => 2,
-            }]);
-            hasher.finalize()
         };
-
-        if let Some(hit) = self.text_cache.lock().unwrap().get(&key).cloned() {
-            return hit;
+        hasher.update(&[match weight {
+            TextWeight::Regular => 0,
+            TextWeight::Bold => 1,
+        }]);
+        hasher.update(&size.to_le_bytes());
+        for c in color {
+            hasher.update(&c.to_le_bytes());
         }
-
-        let compiled: Vec<Arc<Object>> = compile_text(src, font, weight, size, color, align)
-            .into_iter()
-            .map(Arc::new)
-            .collect();
-        let arc = Arc::new(compiled);
-
-        let mut cache = self.text_cache.lock().unwrap();
-        // Re-check under the lock so a parallel miss doesn't leak a second
-        // copy. Same loser-drops-its-result acceptance as `compile_tex_cached`.
-        Arc::clone(cache.entry(key).or_insert(arc))
+        hasher.update(&[match align {
+            TextAlign::Left => 0,
+            TextAlign::Center => 1,
+            TextAlign::Right => 2,
+        }]);
+        let key = hasher.finalize();
+        Self::cached_compile(&self.text_cache, key, || {
+            compile_text(src, font, weight, size, color, align)
+        })
     }
 
     /// Convenience for one-off callers that only have `&Scene`.
@@ -213,7 +189,7 @@ impl Evaluator {
     /// opacity / color_override) and **multiply** the parent's
     /// track-resolved `scale` by the IR's `Tex.scale`. The rasterizer
     /// therefore never sees `Object::Tex`.
-    #[tracing::instrument(name = "eval_at", skip_all, fields(t = t))]
+    #[tracing::instrument(level = "trace", name = "eval_at", skip_all, fields(t = t))]
     pub fn eval_at(&self, t: Time) -> SceneState {
         let mut objects = Vec::new();
         for (id, object) in active_objects_at(&self.timeline, t) {
@@ -234,38 +210,49 @@ impl Evaluator {
                 color_override,
             };
 
-            if let Object::Tex {
-                src,
-                color,
-                scale: tex_scale,
-                ..
-            } = &**object
-            {
-                let children = self.compile_tex_cached(src, *color);
-                let combined_scale = scale * *tex_scale;
-                for child in children.iter() {
-                    objects.push(make_state(Arc::clone(child), combined_scale));
+            // Exhaustive match — adding a new `Object` variant forces a
+            // decision here between "passthrough" and "fan out", instead of
+            // silently defaulting to passthrough.
+            match &**object {
+                Object::Tex {
+                    src,
+                    color,
+                    scale: tex_scale,
+                    ..
+                } => {
+                    let children = self.compile_tex_cached(src, *color);
+                    let combined_scale = scale * *tex_scale;
+                    for child in children.iter() {
+                        objects.push(make_state(Arc::clone(child), combined_scale));
+                    }
                 }
-            } else if let Object::Text {
-                src,
-                font,
-                weight,
-                size,
-                color,
-                align,
-            } = &**object
-            {
-                // Text has no IR `scale` field — `size` is baked into the
-                // shaped geometry (cosmic-text adapter post-multiplies by
-                // `size / SHAPE_PPEM`). Track-resolved scale passes through
-                // unchanged.
-                let children =
-                    self.compile_text_cached(src, font.as_deref(), *weight, *size, *color, *align);
-                for child in children.iter() {
-                    objects.push(make_state(Arc::clone(child), scale));
+                Object::Text {
+                    src,
+                    font,
+                    weight,
+                    size,
+                    color,
+                    align,
+                } => {
+                    // Text has no IR `scale` field — `size` is baked into
+                    // the shaped geometry (cosmic-text adapter post-multiplies
+                    // by `size / SHAPE_PPEM`). Track-resolved scale passes
+                    // through unchanged.
+                    let children = self.compile_text_cached(
+                        src,
+                        font.as_deref(),
+                        *weight,
+                        *size,
+                        *color,
+                        *align,
+                    );
+                    for child in children.iter() {
+                        objects.push(make_state(Arc::clone(child), scale));
+                    }
                 }
-            } else {
-                objects.push(make_state(Arc::clone(object), scale));
+                Object::Polyline { .. } | Object::BezPath { .. } => {
+                    objects.push(make_state(Arc::clone(object), scale));
+                }
             }
         }
         SceneState { objects }

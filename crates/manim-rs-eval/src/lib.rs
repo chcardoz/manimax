@@ -36,6 +36,7 @@
 //! Replaces the role of `manimlib/animation/animation.py`'s `interpolate`.
 //! Reimplemented, not ported.
 
+mod bezpath;
 mod easing;
 mod evaluator;
 mod lerp;
@@ -46,8 +47,6 @@ mod tracks;
 
 pub use evaluator::{Evaluator, eval_at};
 pub use state::{ObjectState, SceneState};
-pub use tex::compile_tex;
-pub use text::compile_text;
 
 #[cfg(test)]
 mod tests {

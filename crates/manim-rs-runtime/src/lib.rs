@@ -19,7 +19,7 @@ use std::path::Path;
 
 use manim_rs_encode::{EncodeError, Encoder};
 use manim_rs_eval::Evaluator;
-use manim_rs_ir::Scene;
+use manim_rs_ir::{Scene, SceneMetadata};
 use manim_rs_raster::{Camera, Runtime, RuntimeError as RasterError};
 
 pub use manim_rs_encode::{EncoderBackend, EncoderOptions};
@@ -32,15 +32,9 @@ pub enum RuntimeError {
     #[error("encoder failed: {0}")]
     Encode(#[from] EncodeError),
     #[error("png write failed: {0}")]
-    Png(String),
+    Png(#[from] png::EncodingError),
     #[error("io: {0}")]
     Io(#[from] io::Error),
-}
-
-impl From<png::EncodingError> for RuntimeError {
-    fn from(e: png::EncodingError) -> Self {
-        RuntimeError::Png(e.to_string())
-    }
 }
 
 /// Render config that flows from the CLI/Python boundary into the runtime.
@@ -54,6 +48,32 @@ pub struct RenderOptions {
 /// Per-frame progress callback: `(frame_idx, total_frames)`. Called *after*
 /// the frame has been pushed to the encoder. `frame_idx` runs `0..total`.
 pub type ProgressFn<'a> = &'a mut dyn FnMut(u32, u32);
+
+/// Bundle the eval + raster + view state both render entry points need.
+/// Building these from a `Scene` consumes the scene (the evaluator owns it).
+struct RenderSetup {
+    runtime: Runtime,
+    evaluator: Evaluator,
+    camera: Camera,
+    background: [f64; 4],
+    meta: SceneMetadata,
+}
+
+impl RenderSetup {
+    fn new(scene: Scene) -> Result<Self, RuntimeError> {
+        let meta = scene.metadata.clone();
+        let runtime = Runtime::new(meta.resolution.width, meta.resolution.height)?;
+        let evaluator = Evaluator::new(scene);
+        let background = meta.background.map(f64::from);
+        Ok(Self {
+            runtime,
+            evaluator,
+            camera: Camera::SLICE_B_DEFAULT,
+            background,
+            meta,
+        })
+    }
+}
 
 /// Convenience: render with default options and no progress callback.
 pub fn render_to_mp4(scene: Scene, out: &Path) -> Result<(), RuntimeError> {
@@ -81,32 +101,26 @@ pub fn render_to_mp4_with_options(
     options: &RenderOptions,
     mut progress: Option<ProgressFn<'_>>,
 ) -> Result<(), RuntimeError> {
-    let meta = scene.metadata.clone();
-    let total_frames = (f64::from(meta.fps) * meta.duration).round().max(0.0) as u32;
+    let setup = RenderSetup::new(scene)?;
+    let total_frames = (f64::from(setup.meta.fps) * setup.meta.duration)
+        .round()
+        .max(0.0) as u32;
 
-    let runtime = Runtime::new(meta.resolution.width, meta.resolution.height)?;
     let mut encoder = Encoder::start_with_options(
         out,
-        meta.resolution.width,
-        meta.resolution.height,
-        meta.fps,
+        setup.meta.resolution.width,
+        setup.meta.resolution.height,
+        setup.meta.fps,
         &options.encoder,
     )?;
-    let evaluator = Evaluator::new(scene);
-
-    let camera = Camera::SLICE_B_DEFAULT;
-    let background: [f64; 4] = [
-        meta.background[0] as f64,
-        meta.background[1] as f64,
-        meta.background[2] as f64,
-        meta.background[3] as f64,
-    ];
 
     for frame_idx in 0..total_frames {
         let _frame_span = tracing::info_span!("frame", idx = frame_idx).entered();
-        let t = f64::from(frame_idx) / f64::from(meta.fps);
-        let state = evaluator.eval_at(t);
-        let pixels = runtime.render(&state, &camera, background)?;
+        let t = f64::from(frame_idx) / f64::from(setup.meta.fps);
+        let state = setup.evaluator.eval_at(t);
+        let pixels = setup
+            .runtime
+            .render(&state, &setup.camera, setup.background)?;
         encoder.push_frame(pixels)?;
 
         if let Some(cb) = progress.as_mut() {
@@ -130,21 +144,17 @@ pub fn render_to_mp4_with_options(
 /// caller can ask for `t = +inf` to get the final frame without
 /// special-casing the duration.
 pub fn render_frame_to_png(scene: Scene, out: &Path, t: f64) -> Result<(), RuntimeError> {
-    let meta = scene.metadata.clone();
-    let runtime = Runtime::new(meta.resolution.width, meta.resolution.height)?;
-    let evaluator = Evaluator::new(scene);
-    let camera = Camera::SLICE_B_DEFAULT;
-    let background: [f64; 4] = [
-        meta.background[0] as f64,
-        meta.background[1] as f64,
-        meta.background[2] as f64,
-        meta.background[3] as f64,
-    ];
-
-    let state = evaluator.eval_at(t);
-    let pixels = runtime.render(&state, &camera, background)?;
-
-    write_rgba_png(out, meta.resolution.width, meta.resolution.height, &pixels)
+    let setup = RenderSetup::new(scene)?;
+    let state = setup.evaluator.eval_at(t);
+    let pixels = setup
+        .runtime
+        .render(&state, &setup.camera, setup.background)?;
+    write_rgba_png(
+        out,
+        setup.meta.resolution.width,
+        setup.meta.resolution.height,
+        &pixels,
+    )
 }
 
 fn write_rgba_png(path: &Path, width: u32, height: u32, rgba: &[u8]) -> Result<(), RuntimeError> {

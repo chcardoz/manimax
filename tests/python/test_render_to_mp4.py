@@ -6,13 +6,17 @@ Slice C migrated the FFI from a JSON string to a dict via pythonize;
 
 from __future__ import annotations
 
-import shutil
-import subprocess
 from pathlib import Path
 
-import numpy as np
 import pytest
-from conftest import canonical_square_scene
+from conftest import (
+    canonical_square_scene,
+    centroid_in_band,
+    extract_frame_raw,
+    ffprobe_stream,
+    requires_ffmpeg,
+    requires_ffprobe,
+)
 from manim_rs import _rust, ir
 from manim_rs.objects.geometry import Polyline
 from manim_rs.scene import Scene
@@ -28,7 +32,7 @@ def _build_scene() -> Scene:
     )
 
 
-@pytest.mark.skipif(shutil.which("ffprobe") is None, reason="ffprobe not on PATH")
+@requires_ffprobe
 def test_render_to_mp4_produces_valid_file(tmp_path: Path) -> None:
     scene = _build_scene()
     out = tmp_path / "py_out.mp4"
@@ -38,33 +42,16 @@ def test_render_to_mp4_produces_valid_file(tmp_path: Path) -> None:
     assert out.exists(), "mp4 was not written"
     assert out.stat().st_size > 0, "mp4 is empty"
 
-    probe = subprocess.run(
-        [
-            "ffprobe",
-            "-v",
-            "error",
-            "-select_streams",
-            "v:0",
-            "-count_frames",
-            "-show_entries",
-            "stream=width,height,avg_frame_rate,codec_name,nb_read_frames",
-            "-of",
-            "default=noprint_wrappers=1",
-            str(out),
-        ],
-        capture_output=True,
-        text=True,
-        check=True,
-    )
-    output = probe.stdout
-    assert "width=128" in output, output
-    assert "height=72" in output, output
-    assert "codec_name=h264" in output, output
-    assert "avg_frame_rate=15/1" in output, output
+    info = ffprobe_stream(out)
+    assert info["width"] == "128"
+    assert info["height"] == "72"
+    assert info["codec_name"] == "h264"
+    assert info["avg_frame_rate"] == "15/1"
     # 15 fps × 0.4s = 6 frames.
-    assert "nb_read_frames=6" in output, output
+    assert info["nb_read_frames"] == "6"
 
 
+@requires_ffprobe
 def test_render_to_mp4_fps_override(tmp_path: Path) -> None:
     scene = _build_scene()
     out = tmp_path / "py_out_override.mp4"
@@ -72,28 +59,8 @@ def test_render_to_mp4_fps_override(tmp_path: Path) -> None:
     _rust.render_to_mp4(ir.to_builtins(scene.ir), str(out), fps=30)
 
     assert out.exists()
-
-    if shutil.which("ffprobe") is None:
-        pytest.skip("ffprobe not on PATH")
-
-    probe = subprocess.run(
-        [
-            "ffprobe",
-            "-v",
-            "error",
-            "-select_streams",
-            "v:0",
-            "-show_entries",
-            "stream=avg_frame_rate",
-            "-of",
-            "default=noprint_wrappers=1",
-            str(out),
-        ],
-        capture_output=True,
-        text=True,
-        check=True,
-    )
-    assert "avg_frame_rate=30/1" in probe.stdout, probe.stdout
+    info = ffprobe_stream(out, "avg_frame_rate")
+    assert info["avg_frame_rate"] == "30/1"
 
 
 def test_render_to_mp4_rejects_zero_fps(tmp_path: Path) -> None:
@@ -107,7 +74,7 @@ def test_render_to_mp4_rejects_bad_ir(tmp_path: Path) -> None:
         _rust.render_to_mp4({"not": "a scene"}, str(tmp_path / "bad.mp4"))
 
 
-@pytest.mark.skipif(shutil.which("ffmpeg") is None, reason="ffmpeg not on PATH")
+@requires_ffmpeg
 def test_render_to_mp4_frame0_has_content_at_origin(tmp_path: Path) -> None:
     """End-to-end pixel check: decode frame 0 and confirm a centered square
     renders as a bright region around the scene origin.
@@ -132,34 +99,10 @@ def test_render_to_mp4_frame0_has_content_at_origin(tmp_path: Path) -> None:
     out = tmp_path / "centroid.mp4"
     _rust.render_to_mp4(ir.to_builtins(scene.ir), str(out))
 
-    raw = subprocess.run(
-        [
-            "ffmpeg",
-            "-v",
-            "error",
-            "-i",
-            str(out),
-            "-vframes",
-            "1",
-            "-f",
-            "rawvideo",
-            "-pix_fmt",
-            "rgba",
-            "-",
-        ],
-        capture_output=True,
-        check=True,
-    ).stdout
-    assert len(raw) == width * height * 4, f"unexpected frame size: {len(raw)}"
-
-    # Centroid of non-background pixels.
-    arr = np.frombuffer(raw, dtype=np.uint8).reshape(height, width, 4)
-    mask = (arr[..., 0] > 40) | (arr[..., 1] > 40) | (arr[..., 2] > 40)
-    ys, xs = np.nonzero(mask)
-    n = xs.size
-    assert n > 100, f"too few bright pixels in frame 0: {n}"
-
-    cx, cy = float(xs.mean()), float(ys.mean())
+    arr = extract_frame_raw(out, width=width, height=height)
+    res = centroid_in_band(arr, threshold_any=True)
+    assert res is not None and res[2] > 100, f"too few bright pixels in frame 0: {res}"
+    cx, cy, _ = res
     # At SLICE_B_DEFAULT + 480×270, scene (0,0) maps to pixel (240, 135).
     # No Translate in this fixture; the centroid sits on the origin.
     assert abs(cx - 240) <= 3, f"centroid x={cx:.1f} drifted from 240"

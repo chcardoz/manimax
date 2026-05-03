@@ -914,16 +914,13 @@ dependencies = [
 name = "manim-rs-py"
 version = "0.0.0"
 dependencies = [
- "manim-rs-encode",
  "manim-rs-eval",
  "manim-rs-ir",
- "manim-rs-raster",
  "manim-rs-runtime",
  "manim-rs-tex",
  "pyo3",
  "pythonize",
  "serde_json",
- "tracing",
  "tracing-subscriber",
 ]
 

@@ -27,13 +27,14 @@
 //! color override (Step 3) is applied by the eval step, not here.
 
 use kurbo::{Affine, BezPath, Point as KPoint, Rect, Shape};
+use manim_rs_text::ScaleContext;
 use ratex_types::{Color, DisplayItem, DisplayList, PathCommand};
 
 /// World units per em. One em is one world unit by default; the Tex IR
 /// variant's `scale` (Step 3) scales further. If a future slice needs a
 /// different default (e.g. to match `Text`'s implicit scale), change this
 /// in one place.
-pub const WORLD_UNITS_PER_EM: f64 = 1.0;
+const WORLD_UNITS_PER_EM: f64 = 1.0;
 
 /// Convert a RaTeX `DisplayList` into a flat list of filled paths in
 /// Manimax world coordinates (y-up, em-scaled).
@@ -43,13 +44,18 @@ pub const WORLD_UNITS_PER_EM: f64 = 1.0;
 /// renders them in sequence. Empty `DisplayList`s produce empty `Vec`s.
 pub fn display_list_to_bezpath(list: &DisplayList) -> Vec<(BezPath, Color)> {
     // Shift everything up so the baseline (page-y = list.height) lands at
-    // world-y = 0. Applied as the very last step on each item so it
-    // composes with the per-item flip already baked into the helpers.
+    // world-y = 0. Composed into each item's per-item affine so each path
+    // is transformed in a single pass.
     let baseline_shift = Affine::translate((0.0, list.height * WORLD_UNITS_PER_EM));
+
+    // Hoist a single ScaleContext for the whole DisplayList — swash
+    // allocates scratch buffers inside ScaleContext::new() and is designed
+    // to be reused across glyphs.
+    let mut ctx = ScaleContext::new();
 
     let mut out = Vec::with_capacity(list.items.len());
     for item in &list.items {
-        let pair: Option<(BezPath, Color)> = match item {
+        match item {
             DisplayItem::GlyphPath {
                 x,
                 y,
@@ -58,7 +64,13 @@ pub fn display_list_to_bezpath(list: &DisplayList) -> Vec<(BezPath, Color)> {
                 char_code,
                 color,
                 commands: _,
-            } => glyph_path(*x, *y, *scale, font, *char_code).map(|p| (p, *color)),
+            } => {
+                if let Some(p) =
+                    glyph_path(*x, *y, *scale, font, *char_code, baseline_shift, &mut ctx)
+                {
+                    out.push((p, *color));
+                }
+            }
             DisplayItem::Line {
                 x,
                 y,
@@ -70,7 +82,10 @@ pub fn display_list_to_bezpath(list: &DisplayList) -> Vec<(BezPath, Color)> {
                 // Slice E doesn't render dashed lines yet (no \hdashline in
                 // the corpus). When it does, this is where the dash pattern
                 // would be applied. Solid for now.
-                Some((rect_path(*x, *y, *width, *thickness), *color))
+                out.push((
+                    rect_path(*x, *y, *width, *thickness, baseline_shift),
+                    *color,
+                ));
             }
             DisplayItem::Rect {
                 x,
@@ -78,7 +93,7 @@ pub fn display_list_to_bezpath(list: &DisplayList) -> Vec<(BezPath, Color)> {
                 width,
                 height,
                 color,
-            } => Some((rect_path(*x, *y, *width, *height), *color)),
+            } => out.push((rect_path(*x, *y, *width, *height, baseline_shift), *color)),
             DisplayItem::Path {
                 x,
                 y,
@@ -92,60 +107,72 @@ pub fn display_list_to_bezpath(list: &DisplayList) -> Vec<(BezPath, Color)> {
                 // which RaTeX in practice never emits in the supported
                 // corpus. Honoring `fill=false` is deferred until a
                 // corpus expression actually needs it.
-                Some((path_from_commands(commands, *x, *y), *color))
+                out.push((path_from_commands(commands, *x, *y, baseline_shift), *color));
             }
-        };
-        if let Some((mut path, color)) = pair {
-            path.apply_affine(baseline_shift);
-            out.push((path, color));
         }
     }
     out
 }
 
-fn glyph_path(x: f64, y: f64, scale: f64, font_id: &str, char_code: u32) -> Option<BezPath> {
+fn glyph_path(
+    x: f64,
+    y: f64,
+    scale: f64,
+    font_id: &str,
+    char_code: u32,
+    baseline_shift: Affine,
+    ctx: &mut ScaleContext,
+) -> Option<BezPath> {
     let font_bytes = manim_rs_text::katex_font(font_id)?;
     // `scale` is already in em-units; multiply by world-units-per-em to
     // pass swash a ppem in our output unit system.
     let ppem = (scale * WORLD_UNITS_PER_EM) as f32;
-    let mut outline = manim_rs_text::glyph_to_bezpath(font_bytes, char_code, ppem);
-    if outline.elements().is_empty() {
+    let mut outline = manim_rs_text::glyph_to_bezpath(font_bytes, char_code, ppem, ctx);
+    if outline.is_empty() {
         return None;
     }
-    // Glyph outline is y-up at baseline-origin. Translate to its page
-    // position; page-y is y-down so we negate before applying.
-    outline.apply_affine(Affine::translate((
-        x * WORLD_UNITS_PER_EM,
-        -y * WORLD_UNITS_PER_EM,
-    )));
+    // Glyph outline is y-up at baseline-origin. Page-y is y-down, so the
+    // per-glyph translate negates y; the baseline shift then composes on
+    // top so the whole transform is one apply_affine pass.
+    let xform =
+        baseline_shift * Affine::translate((x * WORLD_UNITS_PER_EM, -y * WORLD_UNITS_PER_EM));
+    outline.apply_affine(xform);
     Some(outline)
 }
 
 /// `(x, y, w, h)` in em, page-y-down convention; emit a closed rectangle
-/// in world space (y-up).
-fn rect_path(x: f64, y: f64, w: f64, h: f64) -> BezPath {
+/// in world space (y-up), with the baseline shift already applied.
+fn rect_path(x: f64, y: f64, w: f64, h: f64, baseline_shift: Affine) -> BezPath {
     let scale = WORLD_UNITS_PER_EM;
     let world_top_y = -y * scale;
     let world_bottom_y = -(y + h) * scale;
     let world_left = x * scale;
     let world_right = (x + w) * scale;
     let rect = Rect::new(world_left, world_bottom_y, world_right, world_top_y);
-    rect.to_path(0.0)
+    let mut path = rect.to_path(0.0);
+    path.apply_affine(baseline_shift);
+    path
 }
 
 /// Translate `commands` (page-y-down, em-units, local origin) to a
-/// world-space (y-up, world-units) `BezPath`. Single affine handles both
-/// the translate-by-`(x, y)` and the y-flip:
+/// world-space (y-up, world-units) `BezPath`. Single affine handles the
+/// translate-by-`(x, y)`, the y-flip, and the baseline shift in one pass:
 ///
 ///   world.x = (cmd.x + x) * em
-///   world.y = -(cmd.y + y) * em
+///   world.y = list.height + -(cmd.y + y) * em   [baseline_shift folded in]
 ///
 /// `kurbo::Affine::new([m11, m12, m21, m22, dx, dy])` treats coefficients
 /// column-major — verified by the `affine_flips_correctly` unit test
 /// below.
-fn path_from_commands(commands: &[PathCommand], origin_x: f64, origin_y: f64) -> BezPath {
+fn path_from_commands(
+    commands: &[PathCommand],
+    origin_x: f64,
+    origin_y: f64,
+    baseline_shift: Affine,
+) -> BezPath {
     let em = WORLD_UNITS_PER_EM;
-    let xform = Affine::new([em, 0.0, 0.0, -em, origin_x * em, -origin_y * em]);
+    let local = Affine::new([em, 0.0, 0.0, -em, origin_x * em, -origin_y * em]);
+    let xform = baseline_shift * local;
 
     let mut path = BezPath::new();
     for cmd in commands {
@@ -177,6 +204,11 @@ mod tests {
     use super::*;
     use crate::pipeline::tex_to_display_list;
     use kurbo::Shape;
+
+    fn render(src: &str) -> Vec<(BezPath, Color)> {
+        let dl = tex_to_display_list(src).expect("parses");
+        display_list_to_bezpath(&dl)
+    }
 
     fn assert_paths_renderable(paths: &[(BezPath, Color)], label: &str) {
         assert!(!paths.is_empty(), "{label}: adapter returned no paths");
@@ -212,8 +244,7 @@ mod tests {
 
     #[test]
     fn frac_a_over_b_renders() {
-        let dl = tex_to_display_list(r"\frac{a}{b}").expect("parses");
-        let paths = display_list_to_bezpath(&dl);
+        let paths = render(r"\frac{a}{b}");
         assert_paths_renderable(&paths, r"\frac{a}{b}");
         // \frac must include a Line — confirm a non-glyph rectangle made
         // it through the adapter (a thin BezPath rectangle from rect_path).
@@ -226,15 +257,12 @@ mod tests {
 
     #[test]
     fn sqrt_x_renders() {
-        let dl = tex_to_display_list(r"\sqrt{x}").expect("parses");
-        let paths = display_list_to_bezpath(&dl);
-        assert_paths_renderable(&paths, r"\sqrt{x}");
+        assert_paths_renderable(&render(r"\sqrt{x}"), r"\sqrt{x}");
     }
 
     #[test]
     fn x_squared_renders() {
-        let dl = tex_to_display_list(r"x^2").expect("parses");
-        let paths = display_list_to_bezpath(&dl);
+        let paths = render(r"x^2");
         assert_paths_renderable(&paths, "x^2");
         // The exponent must sit above the baseline of x, so combined bbox
         // should span more than a single glyph's height.
@@ -251,15 +279,11 @@ mod tests {
 
     #[test]
     fn sum_with_limits_renders() {
-        let dl = tex_to_display_list(r"\sum_{i=1}^n i").expect("parses");
-        let paths = display_list_to_bezpath(&dl);
-        assert_paths_renderable(&paths, r"\sum_{i=1}^n i");
+        assert_paths_renderable(&render(r"\sum_{i=1}^n i"), r"\sum_{i=1}^n i");
     }
 
     #[test]
     fn empty_display_list_yields_empty_vec() {
-        let dl = tex_to_display_list("").expect("empty parses");
-        let paths = display_list_to_bezpath(&dl);
-        assert!(paths.is_empty());
+        assert!(render("").is_empty());
     }
 }

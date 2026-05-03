@@ -39,14 +39,14 @@ pub const UNIFORM_SIZE: u64 = std::mem::size_of::<FillUniforms>() as u64;
 
 /// Compiled fill pipeline plus the bind-group layout the runtime needs to
 /// build a uniform binding.
-pub struct FillPipeline {
-    pub pipeline: wgpu::RenderPipeline,
-    pub bind_group_layout: wgpu::BindGroupLayout,
+pub(crate) struct FillPipeline {
+    pub(crate) pipeline: wgpu::RenderPipeline,
+    pub(crate) bind_group_layout: wgpu::BindGroupLayout,
 }
 
 impl FillPipeline {
     /// Compile the fill WGSL shader and create the wgpu pipeline.
-    pub fn new(device: &wgpu::Device, color_format: wgpu::TextureFormat) -> Self {
+    pub(crate) fn new(device: &wgpu::Device, color_format: wgpu::TextureFormat) -> Self {
         let shader = device.create_shader_module(wgpu::ShaderModuleDescriptor {
             label: Some("path_fill.wgsl"),
             source: wgpu::ShaderSource::Wgsl(include_str!("../shaders/path_fill.wgsl").into()),
@@ -72,14 +72,13 @@ impl FillPipeline {
             immediate_size: 0,
         });
 
+        const FILL_ATTRS: [wgpu::VertexAttribute; 1] = wgpu::vertex_attr_array![
+            0 => Float32x2,
+        ];
         let vertex_buffer_layout = wgpu::VertexBufferLayout {
             array_stride: std::mem::size_of::<FillVertex>() as u64,
             step_mode: wgpu::VertexStepMode::Vertex,
-            attributes: &[wgpu::VertexAttribute {
-                format: wgpu::VertexFormat::Float32x2,
-                offset: 0,
-                shader_location: 0,
-            }],
+            attributes: &FILL_ATTRS,
         };
 
         let pipeline = device.create_render_pipeline(&wgpu::RenderPipelineDescriptor {

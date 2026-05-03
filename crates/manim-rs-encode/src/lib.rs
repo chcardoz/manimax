@@ -24,6 +24,7 @@
 //! LGPL via dynamic linking; do not enable static linking without confirming
 //! the GPL implications for the broader project.
 
+use std::io;
 use std::path::{Path, PathBuf};
 use std::sync::mpsc::{Receiver, SyncSender, sync_channel};
 use std::thread::{self, JoinHandle};
@@ -84,6 +85,10 @@ pub struct EncoderOptions {
 pub enum EncodeError {
     #[error("output directory {0} does not exist")]
     OutputDirMissing(PathBuf),
+    #[error(
+        "invalid encoder dimensions: width={width}, height={height}, fps={fps} (all must be > 0)"
+    )]
+    InvalidDimensions { width: u32, height: u32, fps: u32 },
     #[error("frame size mismatch: expected {expected} bytes, got {got}")]
     FrameSizeMismatch { expected: usize, got: usize },
     #[error("ffmpeg/libav error: {0}")]
@@ -92,6 +97,8 @@ pub enum EncodeError {
     EncoderUnavailable,
     #[error("requested encoder backend not available: {0}")]
     BackendUnavailable(String),
+    #[error("failed to spawn encoder worker thread: {0}")]
+    WorkerSpawn(#[from] io::Error),
     #[error("encoder worker thread terminated unexpectedly")]
     WorkerGone,
     #[error("encoder worker thread panicked")]
@@ -108,8 +115,6 @@ pub struct Encoder {
     worker: Option<JoinHandle<Result<(), EncodeError>>>,
     width: u32,
     height: u32,
-    fps: u32,
-    output: PathBuf,
 }
 
 impl Encoder {
@@ -137,10 +142,9 @@ impl Encoder {
         fps: u32,
         options: &EncoderOptions,
     ) -> Result<Self, EncodeError> {
-        assert!(
-            width > 0 && height > 0 && fps > 0,
-            "non-zero dims/fps required"
-        );
+        if width == 0 || height == 0 || fps == 0 {
+            return Err(EncodeError::InvalidDimensions { width, height, fps });
+        }
 
         if let Some(parent) = output.parent() {
             if !parent.as_os_str().is_empty() && !parent.exists() {
@@ -148,17 +152,14 @@ impl Encoder {
             }
         }
 
-        // libav's global init — repeated calls are no-ops, so it's safe to call
-        // from every Encoder construction. Cheaper than a OnceLock guard.
+        // libav's global init — repeated calls are no-ops.
         ffmpeg::init()?;
 
         let mut octx = format::output(&output)?;
         let global_header = octx.format().flags().contains(format::Flags::GLOBAL_HEADER);
 
-        // Codec + pixel format pick. Hardware path uses NV12 (libx264 also
-        // accepts it but YUV420P is the historical default for the software
-        // path, and bit-for-bit output stability across encoder versions is
-        // easier with the unchanged software-path config).
+        // Software stays on YUV420P for bit-for-bit output stability across
+        // libx264 versions; hardware uses NV12 (videotoolbox/nvenc native).
         let (codec, encoder_pix_fmt) = match options.backend {
             EncoderBackend::Software => {
                 let codec =
@@ -166,17 +167,15 @@ impl Encoder {
                 (codec, Pixel::YUV420P)
             }
             EncoderBackend::Hardware => {
-                // Walk HARDWARE_CANDIDATES; first codec linked into this
-                // libavcodec wins. macOS dev hits `h264_videotoolbox`;
-                // a Linux+Nvidia container hits `h264_nvenc`. Same NV12
-                // pixel format works for both.
                 let codec = HARDWARE_CANDIDATES
                     .iter()
                     .find_map(|name| ffmpeg::encoder::find_by_name(name))
-                    .ok_or(EncodeError::BackendUnavailable(
-                        "no hardware h264 encoder (tried h264_videotoolbox, h264_nvenc)"
-                            .to_string(),
-                    ))?;
+                    .ok_or_else(|| {
+                        EncodeError::BackendUnavailable(format!(
+                            "no hardware h264 encoder (tried {})",
+                            HARDWARE_CANDIDATES.join(", ")
+                        ))
+                    })?;
                 (codec, Pixel::NV12)
             }
         };
@@ -229,16 +228,14 @@ impl Encoder {
         // (e.g. 1/30 → 1/15360), so re-read it for correct packet rescaling.
         let out_time_base = octx.stream(0).expect("stream 0 was just added").time_base();
 
-        // `Scaler` and `Video` wrap raw libav pointers that are not `Send`,
-        // so they're constructed *on* the worker thread (after `move`) rather
-        // than constructed here and shipped across the spawn boundary. The
-        // `octx` and `encoder` move fine because libav allows their state to
-        // be touched from a single thread, just not migrated mid-operation;
-        // we only ever use them on the worker thread after spawn.
+        // `Scaler` and `Video` wrap non-`Send` libav pointers, so they're
+        // constructed on the worker thread (after `move`). `octx` and `encoder`
+        // are single-thread-affine but migrate fine across the spawn boundary
+        // since we only touch them on the worker thereafter.
         //
         // Bounded depth-1 channel: at most one frame in flight ahead of the
-        // encoder. Anything deeper just buffers GBs of RGBA in RAM with no
-        // throughput benefit (the encoder is the bottleneck either way).
+        // encoder. Anything deeper just buffers GBs of RGBA with no throughput
+        // benefit (encoder is the bottleneck either way).
         let (tx, rx) = sync_channel::<Vec<u8>>(1);
 
         let worker = thread::Builder::new()
@@ -253,12 +250,13 @@ impl Encoder {
                     height,
                     ScalerFlags::BILINEAR,
                 )?;
-                let src_frame = Video::new(Pixel::RGBA, width, height);
                 let s = WorkerState {
                     octx,
                     encoder: opened,
                     scaler,
-                    src_frame,
+                    src_frame: Video::new(Pixel::RGBA, width, height),
+                    yuv_frame: Video::new(encoder_pix_fmt, width, height),
+                    packet: ffmpeg::Packet::empty(),
                     width,
                     height,
                     in_time_base,
@@ -266,34 +264,14 @@ impl Encoder {
                     next_pts: 0,
                 };
                 run_worker(s, rx)
-            })
-            .expect("spawning encoder worker thread");
+            })?;
 
         Ok(Self {
             tx: Some(tx),
             worker: Some(worker),
             width,
             height,
-            fps,
-            output: output.to_path_buf(),
         })
-    }
-
-    /// Frame width in pixels. Each [`push_frame`](Self::push_frame) must match.
-    pub fn width(&self) -> u32 {
-        self.width
-    }
-    /// Frame height in pixels. Each [`push_frame`](Self::push_frame) must match.
-    pub fn height(&self) -> u32 {
-        self.height
-    }
-    /// Frames-per-second baked into the codec context.
-    pub fn fps(&self) -> u32 {
-        self.fps
-    }
-    /// Destination mp4 path passed at [`start`](Self::start).
-    pub fn output(&self) -> &Path {
-        &self.output
     }
 
     /// Push one frame of tight `width * height * 4` sRGB RGBA bytes.
@@ -302,7 +280,7 @@ impl Encoder {
     /// Returns immediately if there's slot available; blocks (briefly) if the
     /// worker is still encoding the previous frame. No swscale, no encode,
     /// no mux work happens on the caller's thread.
-    #[tracing::instrument(name = "encoder::push_frame", skip_all, fields(bytes = rgba.len()))]
+    #[tracing::instrument(level = "trace", name = "encoder::push_frame", skip_all)]
     pub fn push_frame(&mut self, rgba: Vec<u8>) -> Result<(), EncodeError> {
         let expected = (self.width * self.height * 4) as usize;
         if rgba.len() != expected {
@@ -352,7 +330,13 @@ struct WorkerState {
     octx: format::context::Output,
     encoder: ffmpeg::encoder::Video,
     scaler: Scaler,
+    /// Reusable RGBA source frame; refilled per `encode_one_frame`.
     src_frame: Video,
+    /// Reusable destination frame for swscale's RGBA→YUV/NV12 output. At 4K
+    /// this saves a ~12 MB allocation per frame.
+    yuv_frame: Video,
+    /// Reusable packet drained from the encoder. Cheap but per-frame.
+    packet: ffmpeg::Packet,
     width: u32,
     height: u32,
     in_time_base: ffmpeg::Rational,
@@ -389,12 +373,11 @@ fn encode_one_frame(s: &mut WorkerState, rgba: &[u8]) -> Result<(), EncodeError>
         }
     }
 
-    let mut yuv = Video::empty();
-    s.scaler.run(&s.src_frame, &mut yuv)?;
-    yuv.set_pts(Some(s.next_pts));
+    s.scaler.run(&s.src_frame, &mut s.yuv_frame)?;
+    s.yuv_frame.set_pts(Some(s.next_pts));
     s.next_pts += 1;
 
-    s.encoder.send_frame(&yuv)?;
+    s.encoder.send_frame(&s.yuv_frame)?;
     drain_packets(s)
 }
 
@@ -410,12 +393,11 @@ fn flush_encoder(s: &mut WorkerState) -> Result<(), EncodeError> {
 /// (`N / (N-1)` instead of `N/1`) because PTS marks frame *starts* and the
 /// muxer can't infer the last frame's display window from PTS alone.
 fn drain_packets(s: &mut WorkerState) -> Result<(), EncodeError> {
-    let mut packet = ffmpeg::Packet::empty();
-    while s.encoder.receive_packet(&mut packet).is_ok() {
-        packet.set_stream(0);
-        packet.set_duration(1);
-        packet.rescale_ts(s.in_time_base, s.out_time_base);
-        packet.write_interleaved(&mut s.octx)?;
+    while s.encoder.receive_packet(&mut s.packet).is_ok() {
+        s.packet.set_stream(0);
+        s.packet.set_duration(1);
+        s.packet.rescale_ts(s.in_time_base, s.out_time_base);
+        s.packet.write_interleaved(&mut s.octx)?;
     }
     Ok(())
 }

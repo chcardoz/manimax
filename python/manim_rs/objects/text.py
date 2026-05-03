@@ -13,12 +13,13 @@ fonts and bold synthesis are documented in `crates/manim-rs-text/src/cosmic.rs`.
 from __future__ import annotations
 
 import math
-from typing import Final
+from typing import get_args
 
 from manim_rs import ir
+from manim_rs.objects._coerce import rgba as _rgba
 
-_VALID_WEIGHTS: Final[frozenset[str]] = frozenset({"regular", "bold"})
-_VALID_ALIGNS: Final[frozenset[str]] = frozenset({"left", "center", "right"})
+_VALID_WEIGHTS = get_args(ir.TextWeight)
+_VALID_ALIGNS = get_args(ir.TextAlign)
 
 
 class Text:
@@ -70,13 +71,9 @@ class Text:
         if not src:
             raise ValueError("Text source must not be empty")
         if weight not in _VALID_WEIGHTS:
-            raise ValueError(
-                f"Text weight must be one of {sorted(_VALID_WEIGHTS)}, " f"got {weight!r}"
-            )
+            raise ValueError(f"Text weight must be one of {_VALID_WEIGHTS}, got {weight!r}")
         if align not in _VALID_ALIGNS:
-            raise ValueError(
-                f"Text align must be one of {sorted(_VALID_ALIGNS)}, " f"got {align!r}"
-            )
+            raise ValueError(f"Text align must be one of {_VALID_ALIGNS}, got {align!r}")
         size_f = float(size)
         if not math.isfinite(size_f) or size_f <= 0.0:
             raise ValueError(f"Text size must be a positive finite number, got {size!r}")
@@ -86,12 +83,7 @@ class Text:
         self.font: str | None = font
         self.weight: ir.TextWeight = weight
         self.size: float = size_f
-        self.color: ir.RgbaSrgb = (
-            float(color[0]),
-            float(color[1]),
-            float(color[2]),
-            float(color[3]),
-        )
+        self.color: ir.RgbaSrgb = _rgba(color)
         self.align: ir.TextAlign = align
 
     def to_ir(self) -> ir.Text:
