@@ -366,7 +366,7 @@ Audio pipelines, progress display, format switches, and section concatenation ar
 ## Scene discovery
 
 **ManimGL reference:** `manimlib/extract_scene.py` @ `c5e23d9`.
-**Manimax port:** `python/manim_rs/discovery.py`; wired from `python/manim_rs/cli.py`.
+**Manimax port:** `python/manim_rs/discovery.py`; wired from `python/manim_rs/cli/__init__.py`.
 
 ```
 python -m manim_rs render MODULE SCENE OUT [--quality | -r WxH] [--duration SEC] [--fps N] [-o]

@@ -4,11 +4,11 @@ Architectural watchpoints — work that's deferred, with concrete triggers for w
 
 ## IR codegen — promote Rust to source-of-truth, generate Python
 
-**Today.** `crates/manim-rs-ir/src/lib.rs` (serde) and `python/manim_rs/ir.py` (msgspec) are hand-mirrored. The roundtrip test catches structural drift but not field-ordering drift. Adding an IR variant requires edits in both files plus a paired fixture update.
+**Today.** `crates/manim-rs-ir/src/lib.rs` (serde) and `python/manim_rs/ir/` (msgspec subpackage) are hand-mirrored. The roundtrip test catches structural drift but not field-ordering drift. Adding an IR variant requires edits in both files plus a paired fixture update.
 
 **Why we're not acting.** With four `Object` variants and ~20 IR structs, the manual mirror is tractable. Building an IDL + codegen pipeline ([rerun's approach](https://github.com/rerun-io/rerun/blob/main/ARCHITECTURE.md)) would be premature.
 
-**Trigger.** When the next time-invariant content variant lands (`SVG`, `Surface`, …) — at 5+ `Object` variants the duplication starts paying real cost. Likely path: codegen `python/manim_rs/ir.py` from the Rust IR via a small `build.rs` step, keeping JSON wire and msgspec authoring. Rerun went the typed-schema route (Cap'n Proto / Arrow IPC) because they had four SDK languages; we have one and a half.
+**Trigger.** When the next time-invariant content variant lands (`SVG`, `Surface`, …) — at 5+ `Object` variants the duplication starts paying real cost. Likely path: codegen `python/manim_rs/ir/` from the Rust IR via a small `build.rs` step, keeping JSON wire and msgspec authoring. Rerun went the typed-schema route (Cap'n Proto / Arrow IPC) because they had four SDK languages; we have one and a half.
 
 ## `Object` enum vs. trait + dyn-dispatch registry
 
