@@ -119,6 +119,14 @@ wgpu requires `bytes_per_row` for buffer↔texture copies to be a multiple of 25
 
 Fix lives in: `crates/manim-rs-raster/src/lib.rs` — `align_up` + the `readback_pixels` row strip.
 
+### `--workers > 1` does not speed up renders on a single GPU
+
+The chunked-rendering path (`workers > 1`) parallelizes correctly — each worker gets its own `Evaluator`/`Runtime`/encoder, frames are disjoint, output is byte-correct. But on a single-GPU box wall time is flat from `--workers 1` through `--workers 8`, and w8 is slightly *worse*. Reason: ~78 % of every frame is GPU→CPU readback (`copy_texture_to_buffer` + `map_async` + `device.poll(wait_indefinitely)`), and that path serializes through one Metal command queue and one DMA bus. Per-frame readback scales 1:1 with worker count (12 → 27 → 58 → 126 ms at w1/w2/w4/w8). Aggregate GPU throughput is fixed; more workers just split fixed throughput.
+
+Local speedup levers are tracked in `performance.md` entry **M1** (IOSurface/CVPixelBuffer GPU-side handoff, pipelined readback). Worker counts buy you something only across machines, multi-GPU hosts, or eval-heavy scenes (current eval is sub-millisecond).
+
+Fix doesn't live anywhere — this is a "don't waste time tuning `--workers` for local renders" note.
+
 ---
 
 ## Serde / IR schema

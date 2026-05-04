@@ -130,7 +130,7 @@ fn depythonize_scene(ir: &Bound<'_, PyAny>) -> PyResult<Scene> {
 /// without rewriting the Python scene. The GIL is released for the duration
 /// of the render.
 #[pyfunction]
-#[pyo3(signature = (ir, out, fps=None, crf=None, encoder_backend=None, progress=None))]
+#[pyo3(signature = (ir, out, fps=None, crf=None, encoder_backend=None, workers=None, progress=None))]
 fn render_to_mp4(
     py: Python<'_>,
     ir: &Bound<'_, PyAny>,
@@ -138,6 +138,7 @@ fn render_to_mp4(
     fps: Option<u32>,
     crf: Option<u8>,
     encoder_backend: Option<&str>,
+    workers: Option<usize>,
     progress: Option<Py<PyAny>>,
 ) -> PyResult<()> {
     let mut scene = depythonize_scene(ir)?;
@@ -162,6 +163,7 @@ fn render_to_mp4(
     let out_path = PathBuf::from(out);
     let render_options = RenderOptions {
         encoder: EncoderOptions { crf, backend },
+        workers: workers.unwrap_or(1),
     };
     py.allow_threads(move || -> Result<(), manim_rs_runtime::RuntimeError> {
         // Wrap the optional Python callable into a closure the Rust runtime
