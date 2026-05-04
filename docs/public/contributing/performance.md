@@ -56,12 +56,6 @@ Every frame re-tessellates every object via lyon. Geometry is static between tra
 
 In-process libavcodec via worker thread shipped (ADR 0010), closing O6/O8a for 1080p. 4K is at parity with the subprocess baseline but encoder-CPU-bound (~60 ms encode vs ~17 ms raster). VideoToolbox on Apple Silicon and NVENC on Nvidia are the durable lever.
 
-### O7. `eval_at` is free — build features on top of it
-
-0.13 ms/call ≈ 7500 evals/sec on one core. The architectural win over manimgl. Enables but currently unused: interactive scrubbing, snapshot caches keyed on `(ir_hash, t)`, parallel chunked rendering.
-
-**Headroom:** during the 4K 120fps stress render, top reported 198% CPU — render thread + encoder. On an 8–10 core M-series, ~25% of cores in use; 3–4× parallelism headroom for chunked rendering with no renderer changes.
-
 ### O8. MSAA sample count is unprofiled
 
 Hardcoded at 4×. Haven't measured 1× / 2× / 8×. If MSAA resolve is meaningful (O2 hints), a quality knob is worth adding.
@@ -188,6 +182,39 @@ Sub-millisecond per `compile_tex` for the corpus expressions tested in Slice E (
 
 Step 8 byte-determinism tests cover Tex, Text, and a combined Tex+Text+Polyline scene. Two consecutive `_rust.render_to_mp4` calls with identical IR produce **byte-identical** mp4s. Empirical confirmation that HashMap iteration, cosmic-text shaping, swash outlines, lyon tessellation, MSAA resolve, and in-process libx264 are all deterministic in the current configuration. The test in `tests/python/test_e2e_text_tex.py` is the canary if a future encoder change re-introduces nondeterminism.
 
+### M1. Local chunked workers don't speed up single-GPU renders (2026-05-04)
+
+Empirical result from the Montreal local-chunked-rendering PR. 75s / 30fps / 1280x720 ComplexScene, hardware encoder, macOS arm64 / Metal, single GPU.
+
+| workers | wall   | frame mean | raster::render | readback | render − readback |
+| ------- | ------ | ---------- | -------------- | -------- | ----------------- |
+| default | 35.76s | 15.78 ms   | 15.74 ms       | 12.23 ms | ~3.5 ms           |
+| 1       | 35.91s | 15.86      | 15.82          | 12.39    | ~3.4              |
+| 2       | 35.73s | 31.32      | 31.27          | 27.36    | ~3.9              |
+| 4       | 35.67s | 62.62      | 62.57          | 58.49    | ~4.1              |
+| 8       | 37.49s | 130.58     | 130.53         | 125.60   | ~4.9              |
+
+Workers DO run concurrently (sum of frame-busy across w4 = 140.9 s in 35.7 s wall ≈ 4× concurrency). What scales 1:1 with worker count is `readback`; raster compute (`raster::render − readback`) is fixed at ~3–5 ms. Conclusion: **the IR-level parallelism is real and correct, but on a single-GPU box the bottleneck is the shared GPU→CPU readback path, not anything chunkable.** ~78 % of every frame is the `copy_texture_to_buffer` + `map_async` + `device.poll(wait_indefinitely)` round-trip in `crates/manim-rs-raster/src/lib.rs:449–474`. Eight VideoToolbox encoder sessions also contend (`encoder::start` 150 ms × 1 → 303 ms × 8).
+
+**Where the IR parallelism does pay off:** across machines (Divita), multi-GPU hosts, or workloads where eval is heavy (eval is currently sub-millisecond — `frame` and `raster::render` busy times are within 0.05 ms).
+
+**Single-machine speedup levers, ranked.** None of these are about more workers.
+
+1. **GPU-side handoff to VideoToolbox via `IOSurface` / `CVPixelBuffer`.** Skip readback entirely on macOS — wgpu writes a Metal texture, VideoToolbox encodes from the same `IOSurface`. Removes the 12 ms/frame that dominates today. Largest available local lever; macOS-specific code path through `wgpu::hal`.
+2. **Pipelined / double-buffered readback (extends N6).** Today the CPU thread blocks on `poll(wait_indefinitely)` before frame N+1 starts encoding. With 2–3 readback buffers in flight, frame N readback overlaps frame N+1 draw and frame N−1 encode. Theoretical ceiling ~4 ms/frame (the non-readback part) → ~3–4× speedup with no API changes and no extra GPU pressure. Localized refactor inside `manim-rs-raster`. **Highest-leverage portable change.**
+3. **Render at lower resolution for previews.** Readback cost is proportional to pixel count; 1280×720 → 960×540 cuts readback ~2.25×.
+
+Things that explicitly **won't** help on one GPU: more local workers (proven by the table above), parallel software encode (encoder push doesn't show up in traces), threaded eval (already sub-ms).
+
+Trace artifacts: `/tmp/manimax-parallel-e2e/full-{default,w1,w2,w4,w8}.trace.json` (ephemeral; reproduce with `python -m manim_rs render ... --workers N` against a 75s ComplexScene shim).
+
+**Per-worker startup tax (O(N) in worker count).** Two known costs scale linearly with `--workers`, both in `crates/manim-rs-runtime/src/lib.rs` chunked dispatch:
+
+1. **`Scene::clone()` per worker.** Each worker gets a deep clone of the IR (`Scene` and all nested `Vec`/`String` heap data). For text-heavy or math-heavy scenes this is non-trivial. Wrapping `Scene` in `Arc<Scene>` and reworking `Evaluator` to borrow rather than own would make this O(1) per worker.
+2. **wgpu adapter + device init per worker.** Each worker calls `Runtime::new`, which runs `instance.request_adapter` + device creation (~50–500 ms each on macOS) and starts cold Tex/Text caches. Sharing one `Instance`/`Adapter`/`Device` across workers (each owning only its render targets) would eliminate this. Cold caches per worker also mean text-heavy chunked renders repeat per-glyph compile work.
+
+Neither is on the per-frame hot path, so the impact is bounded by `N × startup_cost`. Worth revisiting if/when chunked rendering becomes the default or scales beyond 8 workers on one machine.
+
 ---
 
 ## Priority order (when a future perf pass happens)
@@ -195,12 +222,11 @@ Step 8 byte-determinism tests cover Tex, Text, and a combined Tex+Text+Polyline 
 Cost/benefit for the live items above:
 
 1. **O1 + N13 — cache `Runtime`** — cheap, big win for interactive/short renders.
-2. **O7 — parallel chunked rendering at CLI** — cheap, 3–4× wins on long renders (real core headroom confirmed).
-3. **N4 + N1 + N2 — per-frame allocator churn** — small, compounding.
-4. **O4 — tessellation cache** — medium cost, proportional to scene complexity.
-5. **N6 — render/encode pipelining** — medium cost; biggest 4K win after the in-process encoder.
-6. **O3 — per-object submit refactor** — medium cost; unlocks many-object scenes (13k-submit evidence).
-7. **E3a — `PyRuntime` PyClass** — medium cost; folds O1 + N12 into one fix and unlocks the interactive surface.
-8. **O6 (b) — hardware encoders (VideoToolbox / NVENC)** — higher cost; the remaining 4K lever.
+2. **N4 + N1 + N2 — per-frame allocator churn** — small, compounding.
+3. **O4 — tessellation cache** — medium cost, proportional to scene complexity.
+4. **N6 — render/encode pipelining** — medium cost; biggest 4K win after the in-process encoder.
+5. **O3 — per-object submit refactor** — medium cost; unlocks many-object scenes (13k-submit evidence).
+6. **E3a — `PyRuntime` PyClass** — medium cost; folds O1 + N12 into one fix and unlocks the interactive surface.
+7. **O6 (b) — hardware encoders (VideoToolbox / NVENC)** — higher cost; the remaining 4K lever.
 
 Start with cache policy and `Runtime` lifecycle, then re-trace and pick between O4, N6, O3 based on the remaining span shape.

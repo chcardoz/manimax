@@ -18,6 +18,7 @@ Each note answers: what was decided, why, what was rejected, and what consequenc
 
 - **[Pixel cache: removed](pixel-cache.md)** — the cache was more expensive than the work it was supposed to skip. `eval_at` is fast enough that re-rendering is cheaper than maintaining a GB-scale on-disk store.
 - **[In-process libavcodec encoder](encoder-in-process.md)** — replaced the ffmpeg subprocess + stdin pipe with worker-thread libavcodec via `ffmpeg-the-third`. Saves the subprocess `wait()` tail; restores raster/encode parallelism with a bounded channel.
+- **[Local chunked rendering](local-chunked-rendering.md)** — renders disjoint frame ranges as independent mp4 chunks, then concatenates them in deterministic frame order.
 - **[Hardware encoder fallback chain](encoder-hardware.md)** — `--encoder hardware` walks `videotoolbox → nvenc` and uses whichever is linked. Single deploy artifact across macOS dev and Linux GPU containers.
 
 ## Text and math

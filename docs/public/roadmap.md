@@ -61,6 +61,20 @@ The watchpoint is the **count**, not "we're at Slice F so we should refactor." P
 
 When the first fires, do the consolidation pass — introduce a `FrameSink` trait. Don't add a third format-specific function first; that's how things calcify.
 
+## GPU-side encode handoff (skip CPU readback on macOS)
+
+**Today.** Every frame goes GPU → padded readback buffer → `map_async` + `device.poll(wait_indefinitely)` → CPU `Vec<u8>` → encoder. Empirically (`performance.md` M1) this readback is ~78 % of per-frame time on a 1280×720 hardware-encoded render, and it's the reason `--workers > 1` cannot deliver local speedup on a single GPU — readback serializes through one DMA bus.
+
+**Why we're not acting.** Requires a Metal-specific path through `wgpu::hal` to share an `IOSurface`-backed `CVPixelBuffer` between the wgpu render target and a VideoToolbox `VTCompressionSession`. Distinct effort from the portable encode pipeline. Pipelined / double-buffered readback (entry **N6** in `performance.md`) is the portable predecessor and likely captures most of the win without platform code.
+
+**Trigger.** Any of:
+
+- A target user (Divita, local previewers) reports render-throughput pain on single-GPU hardware that the pipelined-readback fix didn't resolve.
+- We add a second platform-specific encoder backend (NVENC) — bundle the IOSurface and the equivalent CUDA/D3D11 surface path together.
+- Frame readback exceeds 50 % of frame time at 4K with the in-process hardware encoder after pipelining lands.
+
+Sequencing: do **N6** (pipelined readback) first; re-trace; only then evaluate IOSurface handoff against remaining frame-time share.
+
 ## Update cadence
 
 When a trigger fires and gets actioned, the entry moves to the changelog or a new design note. When a trigger fires and we *choose* not to act, leave a dated note explaining why. Empty file = no parked work, which is fine.
