@@ -72,6 +72,15 @@ def render(
             "Hardware is much faster at 4K but produces a different bit stream."
         ),
     ),
+    workers: int = typer.Option(
+        1,
+        "--workers",
+        min=1,
+        help=(
+            "Local frame-range workers. Values above 1 render independent mp4 "
+            "chunks in parallel and concatenate them after all chunks finish."
+        ),
+    ),
     trace_json: Path = typer.Option(  # noqa: B008
         None,
         "--trace-json",
@@ -98,6 +107,7 @@ def render(
         duration=duration,
         crf=crf,
         encoder=encoder.value,
+        workers=workers,
         progress=progress_cb,
         trace_json=trace_json,
     )

@@ -14,7 +14,7 @@ import textwrap
 from pathlib import Path
 
 import pytest
-from conftest import ffprobe_stream, requires_ffprobe
+from conftest import ffprobe_stream, requires_ffmpeg_and_ffprobe, requires_ffprobe
 from manim_rs.cli import app
 from typer.testing import CliRunner
 
@@ -85,6 +85,33 @@ def test_cli_render_produces_valid_mp4(scene_file: Path, tmp_path: Path) -> None
     assert info["pix_fmt"] == "yuv420p"
     assert info["avg_frame_rate"] == "15/1"
     # Scene plays a 0.4s animation; 15fps × 0.4s = 6 frames.
+    assert info["nb_read_frames"] == "6"
+
+
+@requires_ffmpeg_and_ffprobe
+def test_cli_render_with_workers_produces_valid_mp4(scene_file: Path, tmp_path: Path) -> None:
+    out = tmp_path / "cli-workers.mp4"
+    runner = CliRunner()
+    result = runner.invoke(
+        app,
+        [
+            "render",
+            str(scene_file),
+            "DemoScene",
+            str(out),
+            "--fps",
+            "15",
+            "--workers",
+            "2",
+        ],
+    )
+
+    assert result.exit_code == 0, result.output
+    info = ffprobe_stream(out)
+    assert info["width"] == "480"
+    assert info["height"] == "270"
+    assert info["codec_name"] == "h264"
+    assert info["avg_frame_rate"] == "15/1"
     assert info["nb_read_frames"] == "6"
 
 

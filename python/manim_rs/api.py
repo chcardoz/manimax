@@ -34,6 +34,7 @@ def render_scene(
     duration: float | None = None,
     crf: int | None = None,
     encoder: EncoderName = "software",
+    workers: int = 1,
     progress: ProgressCallback | None = None,
     trace_json: Path | str | None = None,
 ) -> None:
@@ -45,6 +46,8 @@ def render_scene(
     """
     if trace_json is not None:
         _rust.install_trace_json(str(trace_json))
+    if workers <= 0:
+        raise ValueError(f"workers must be positive, got {workers}")
 
     scene_ir = _build_ir(scene_cls, fps=fps, resolution=resolution)
     if duration is not None:
@@ -58,6 +61,7 @@ def render_scene(
         str(out),
         crf=crf,
         encoder_backend=encoder,
+        workers=workers,
         progress=progress,
     )
 
